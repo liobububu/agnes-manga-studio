@@ -1,0 +1,28 @@
+# Local data and secrets
+data/
+models.json
+settings.json
+*.bak
+
+# Build products and temporary SEA files
+build/
+dist/
+outputs/
+*.exe
+
+# Browser/UI test profiles
+**/ui-profile-*/
+**/ui-home-*/
+
+# Runtime logs
+*.log
+npm-debug.log*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch
+.synchk/
