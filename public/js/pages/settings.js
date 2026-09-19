@@ -11,6 +11,7 @@ import { state, refreshState } from '../app.js';
 const SECTIONS = [
   { id: 'api', label: 'Agnes API', icon: 'key' },
   { id: 'model', label: '模型配置', icon: 'cpu' },
+  { id: 'host', label: '图床', icon: 'cloud' },
   { id: 'task', label: '任务配置', icon: 'layers' },
   { id: 'templates', label: '提示词模板', icon: 'template' },
   { id: 'data', label: '数据管理', icon: 'database' },
@@ -66,7 +67,7 @@ export default async function settings(container) {
     });
     const p = container.querySelector('#panel');
     p.innerHTML = ({
-      api: renderApi, model: renderModel, task: renderTask,
+      api: renderApi, model: renderModel, host: renderHost, task: renderTask,
       templates: renderTemplates, data: renderData, about: renderAbout,
     })[section]();
     bindPanel(p);
@@ -141,6 +142,55 @@ export default async function settings(container) {
           <div class="field"><label>模型缓存有效期（小时）</label><input class="input" id="m-ttl" type="number" min="1" value="${esc(settings.model_cache_ttl_hours || 24)}" /></div>
         </div>
         <button class="btn btn-primary" id="save-model">${icon('save', 14)}保存模型设置</button>
+      </div>`;
+  }
+
+  // ── 图床 ──────────────────────────────────────────────────
+  function renderHost() {
+    const hosts = (state.imageHost && state.imageHost.hosts) || [];
+    const configured = !!(state.imageHost && state.imageHost.configured);
+    const cur = hosts.find((h) => h.value === settings.image_host_type);
+    return `
+      <div class="card">
+        <div class="card-title">${icon('cloud', 15)}图床（让本地图片能用于图生视频）</div>
+        <div class="note ${configured ? 'green' : 'orange'}" style="margin-bottom:16px">
+          ${configured
+            ? `${icon('check', 13)} 已配置 ${esc(state.imageHost.label || '')}：提交图生视频时，本机图片会自动上传成公网地址。`
+            : `${icon('alert', 13)} 未配置：本机生成的图片没有公网地址，Agnes 抓不到，图生视频用不了（会自动降级为文生视频）。`}
+        </div>
+        <div class="field">
+          <label>图床服务</label>
+          <select class="select" id="h-type">
+            <option value="">未启用</option>
+            ${hosts.map((h) => `<option value="${esc(h.value)}"${settings.image_host_type === h.value ? ' selected' : ''}>${esc(h.label)}</option>`).join('')}
+          </select>
+          <div class="hint">都是免费自助申请的服务。程序只在你主动提交图生视频时才上传图片。</div>
+        </div>
+        <div class="field">
+          <label>API Key / Token</label>
+          <input class="input mono" id="h-key" type="password" value=""
+            placeholder="${esc(cur ? cur.keyHint : (settings.image_host_key_masked ? `已保存（${esc(settings.image_host_key_masked)}），留空表示不修改` : '选择图床后填写'))}" />
+        </div>
+        ${settings.image_host_type === 'custom'
+          ? `<div class="field"><label>上传接口地址</label>
+               <input class="input mono" id="h-endpoint" value="${esc(settings.image_host_endpoint || '')}" placeholder="https://…/upload" /></div>`
+          : ''}
+        <div class="field">
+          <label>提交图生视频前自动上传本地图片</label>
+          <div class="row">
+            <div class="switch ${settings.auto_upload_image === '1' ? 'on' : ''}" id="h-auto"></div>
+            <span style="font-size:12px;color:var(--text-3)">关闭后，只有已填公网 URL 的图片能用于图生视频</span>
+          </div>
+        </div>
+        <div class="row wrap">
+          <button class="btn btn-primary" id="save-host">${icon('save', 14)}保存图床</button>
+          <button class="btn btn-sm" id="test-host">${icon('zap', 13)}测试上传</button>
+        </div>
+        <div id="host-out" style="margin-top:12px"></div>
+      </div>
+      <div class="note gold" style="margin-top:16px">
+        ${icon('info', 13)} 图床是可选功能。不配置也能正常用文生视频；配置后，本机生成的分镜图可
+        直接用于图生视频，不需要你手动传图再复制链接。Key 只存在本机，不会随项目备份导出。
       </div>`;
   }
 
@@ -313,6 +363,34 @@ export default async function settings(container) {
         auto_refresh_models: p.querySelector('#m-auto').classList.contains('on') ? '1' : '0',
         model_cache_ttl_hours: p.querySelector('#m-ttl').value,
       });
+    } else if (section === 'host') {
+      p.querySelector('#h-auto').onclick = () => p.querySelector('#h-auto').classList.toggle('on');
+      p.querySelector('#save-host').onclick = () => save({
+        image_host_type: p.querySelector('#h-type').value,
+        image_host_key: p.querySelector('#h-key').value.trim(), // 留空=不修改
+        image_host_endpoint: p.querySelector('#h-endpoint') ? p.querySelector('#h-endpoint').value.trim() : '',
+        auto_upload_image: p.querySelector('#h-auto').classList.contains('on') ? '1' : '0',
+      }, '图床已保存');
+      p.querySelector('#test-host').onclick = async (e) => {
+        const btn = e.currentTarget;
+        const out = p.querySelector('#host-out');
+        btn.disabled = true;
+        btn.innerHTML = `<div class="spinner sm"></div>测试中…`;
+        // 先落盘再测，否则测的是旧配置，会得出「填了却说没配置」的假失败
+        await api.saveSettings({
+          image_host_type: p.querySelector('#h-type').value,
+          image_host_key: p.querySelector('#h-key').value.trim(),
+          image_host_endpoint: p.querySelector('#h-endpoint') ? p.querySelector('#h-endpoint').value.trim() : '',
+        });
+        const r = await api.testImageHost();
+        btn.disabled = false;
+        btn.innerHTML = `${icon('zap', 13)}测试上传`;
+        out.innerHTML = r.ok
+          ? `<div class="note green">${icon('check', 13)} ${esc(r.data.message)}</div>`
+          : `<div class="note red">${icon('x', 13)} ${esc(r.error || '图床测试失败')}</div>`;
+        await refreshState();
+        render();
+      };
     } else if (section === 'task') {
       const auto = p.querySelector('#t-auto');
       auto.onclick = () => auto.classList.toggle('on');

@@ -4,7 +4,7 @@
  * 支持批量补提示词、批量出图、批量出视频（带队列进度）。
  */
 import {
-  icon, esc, extractJson, copyText, SHOT_TYPES, STORYBOARD_STATUS,
+  icon, esc, extractJson, copyText, SHOT_TYPES, STORYBOARD_STATUS, framesForDuration,
 } from '../consts.js';
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm, options } from '../ui.js';
@@ -79,10 +79,15 @@ export default async function storyboards(container, params) {
 
   const offBatch = onEvent('batch', (j) => {
     job = j;
-    renderBatchBar(container.querySelector('#batch-bar'), j);
+    const bar = container.querySelector('#batch-bar');
+    renderBatchBar(bar, j, async (id) => {
+      await api.cancelBatch(id);
+      toast.warn('已请求取消，当前这一项跑完就停');
+    });
     if (j.status !== 'running') {
       load();
-      setTimeout(() => { job = null; renderBatchBar(container.querySelector('#batch-bar'), null); }, 4000);
+      // 结束后多留一会儿：用户要看清成功/失败数，尤其是失败原因
+      setTimeout(() => { job = null; renderBatchBar(bar, null); }, 9000);
     }
   });
 
@@ -295,26 +300,47 @@ ${text}`,
     // 有分镜图的用图生视频，没有的退回文生视频
     const items = shots.map((s) => {
       const img = s.linked_image_id ? (window.__imgMap?.[s.linked_image_id] || null) : null;
+      const publicUrl = publicImageUrl(img);
       return {
         project_id: projectId,
         storyboard_id: s.id,
-        mode: img ? 'image_to_video' : 'text_to_video',
+        mode: publicUrl ? 'image_to_video' : 'text_to_video',
         prompt: s.video_prompt,
-        image: img?.remote_url || img?.url || undefined,
+        image: publicUrl || undefined,
         negative_prompt: s.negative_prompt,
-        num_frames: 121,
+        // 按分镜设计的时长出帧数，别一律 5 秒——镜头写 10 秒却出 5 秒，成片节奏就废了
+        num_frames: framesForDuration(s.duration_seconds),
         frame_rate: 24,
         width: 1152,
         height: 768,
       };
     });
-    const publicOk = items.filter((i) => i.image && i.image.startsWith('http'));
-    if (items.some((i) => i.image && !i.image.startsWith('http'))) {
-      toast.warn('部分分镜图是本地文件，Agnes 无法抓取（需公网 URL），这些镜头将改用文生视频。', 6500);
+    const i2v = items.filter((i) => i.image).length;
+    const degraded = items.length - i2v;
+    if (degraded) {
+      toast.warn(state.imageHost && state.imageHost.configured
+        ? `${degraded} 个镜头没有可用的分镜图，已改用文生视频。`
+        : `${degraded} 个镜头的分镜图只存在本机，Agnes 抓不到，已改用文生视频。到「设置 → 图床」配一个免费图床后，本地图片会自动上传并走图生视频。`, 8000);
     }
     const r = await api.batchVideos({ items, concurrency: 1 });
-    if (r.ok) toast.ok(`已提交 ${r.data.total} 个视频任务${publicOk.length ? '' : '（文生视频）'}`);
-    else toast.err(r.error);
+    if (r.ok) {
+      toast.ok(`已提交 ${r.data.total} 个视频任务（图生视频 ${i2v} 个 / 文生视频 ${degraded} 个）`);
+    } else toast.err(r.error);
+  }
+
+  /**
+   * 取分镜图用于图生视频的地址。
+   * 公网地址直接给；只有本机地址时，若已配置图床就把本地路径交给后端，
+   * 由后端上传成公网地址再提交 Agnes；没配图床才返回空让调用方降级。
+   */
+  function publicImageUrl(img) {
+    if (!img) return '';
+    if (typeof img.remote_url === 'string' && /^https?:\/\//i.test(img.remote_url)) return img.remote_url;
+    if (typeof img.url === 'string' && /^https?:\/\//i.test(img.url)) return img.url;
+    if (state.imageHost && state.imageHost.configured && typeof img.url === 'string' && img.url) {
+      return img.url; // 本地路径：后端会先传图床
+    }
+    return '';
   }
 
   async function genImage(shots) {
@@ -333,13 +359,21 @@ ${text}`,
   async function genVideo(shots) {
     const s = shots[0];
     if (!s?.video_prompt) { toast.err('这个镜头还没有视频提示词'); return; }
+    const img = s.linked_image_id ? (window.__imgMap?.[s.linked_image_id] || null) : null;
+    const publicUrl = publicImageUrl(img);
+    if (img && !publicUrl) {
+      toast.warn(state.imageHost && state.imageHost.configured
+        ? '这个镜头没有可用的分镜图，本次改用文生视频。'
+        : '这个镜头的分镜图只存在本机，Agnes 抓不到，本次改用文生视频。到「设置 → 图床」配一个免费图床后就能自动上传。', 7000);
+    }
     const r = await api.createVideo({
       project_id: projectId,
       storyboard_id: s.id,
-      mode: 'text_to_video',
+      mode: publicUrl ? 'image_to_video' : 'text_to_video',
       prompt: s.video_prompt,
+      image: publicUrl || undefined,
       negative_prompt: s.negative_prompt,
-      num_frames: 121,
+      num_frames: framesForDuration(s.duration_seconds),
       frame_rate: 24,
       width: 1152,
       height: 768,

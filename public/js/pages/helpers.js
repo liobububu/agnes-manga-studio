@@ -31,23 +31,33 @@ export function batchBar() {
   return `<div id="batch-bar"></div>`;
 }
 
-export function renderBatchBar(el, job) {
+export function renderBatchBar(el, job, onCancel) {
   if (!el) return;
   if (!job) { el.innerHTML = ''; return; }
   const pct = job.total ? Math.round((job.done / job.total) * 100) : 0;
   const title = job.type === 'images' ? '批量生成图片' : '批量提交视频';
+  // 失败原因要给人看：只报「3 个失败」等于没说，用户没法判断该重试还是该改参数
+  const errors = job.fail
+    ? [...new Set((job.items || []).filter((i) => !i.ok).map((i) => i.error || '未知错误'))].slice(0, 3)
+    : [];
   el.innerHTML = `
-    <div class="note gold" style="display:flex;align-items:center;gap:14px">
-      ${job.status === 'running' ? '<div class="spinner sm"></div>' : icon('check', 16)}
+    <div class="note ${job.fail ? 'orange' : 'gold'}" style="display:flex;align-items:center;gap:14px">
+      ${job.status === 'running' ? '<div class="spinner sm"></div>' : icon(job.fail ? 'alert' : 'check', 16)}
       <div style="flex:1;min-width:0">
-        <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;gap:10px;flex-wrap:wrap">
           <span>${esc(title)}：${job.done} / ${job.total}${job.status === 'cancelled' ? '（已取消）' : ''}</span>
           <span style="color:var(--ok)">成功 ${job.ok}</span>
           ${job.fail ? `<span style="color:var(--err)">失败 ${job.fail}</span>` : ''}
         </div>
         <div class="progress" style="max-width:none"><i style="width:${pct}%"></i></div>
+        ${errors.length ? `<div style="margin-top:8px;font-size:11.5px;color:#FCA5A5;line-height:1.6">${errors.map((e) => esc(e)).join('<br>')}</div>` : ''}
       </div>
+      ${job.status === 'running' && onCancel
+        ? `<button class="btn btn-xs" id="batch-cancel">取消</button>`
+        : ''}
     </div>`;
+  const btn = el.querySelector('#batch-cancel');
+  if (btn) btn.onclick = () => onCancel(job.id);
 }
 
 /** 卡片里的项目统计（分镜/图片/视频数） */

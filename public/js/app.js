@@ -33,6 +33,7 @@ export const state = {
   stats: {},
   templates: [],
   models: { models: [], updated_at: null, source: 'fallback', error: '' },
+  imageHost: { configured: false, hosts: [] },
   home: '',
   version: '',
   current: 'dashboard',
@@ -115,6 +116,9 @@ export async function refreshState() {
     state.stats = r.data.stats || {};
     state.templates = r.data.templates || [];
     state.models = r.data.models || state.models;
+    // 图床状态决定「本地图片能不能用于图生视频」，各页面都要看
+    const ih = await api.imageHost();
+    if (ih.ok) state.imageHost = ih.data;
     renderSidebar();
   }
 }

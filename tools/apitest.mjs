@@ -36,6 +36,10 @@ const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8B
 
 // ── mock Agnes ───────────────────────────────────────────────
 let queryCount = 0;
+const perVideoQuery = new Map();
+let videoSeq = 0;
+const retryState = new Map();
+let lastVideoBody = {};
 const VIDEO_ID = 'vid_mock_001';
 const mock = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://127.0.0.1');
@@ -46,8 +50,14 @@ const mock = http.createServer((req, res) => {
   };
   if (req.method === 'GET' && u.pathname === '/agnesapi') {
     queryCount++;
-    if (queryCount <= 1) return send(200, { id: VIDEO_ID, status: 'queued', progress: 20 });
-    return send(200, { id: VIDEO_ID, status: 'completed', progress: 100, remixed_from_video_id: `${MOCK_BASE}/video.mp4` });
+    // 按 video_id 分别记账：第一次查排队，第二次查完成。
+    // 批量场景下一个项目会有多条任务同时轮询，共享一个计数器会让
+    // 「第二个任务第一次查就返回 completed」，掩盖真实的轮询行为。
+    const vid = u.searchParams.get('video_id') || VIDEO_ID;
+    const seen = perVideoQuery.get(vid) || 0;
+    perVideoQuery.set(vid, seen + 1);
+    if (seen === 0) return send(200, { id: vid, status: 'queued', progress: 20 });
+    return send(200, { id: vid, status: 'completed', progress: 100, remixed_from_video_id: `${MOCK_BASE}/video.mp4` });
   }
   if (req.method === 'GET' && u.pathname === '/video.mp4') {
     const buf = Buffer.from('MOCKMP4DATA');
@@ -74,9 +84,38 @@ const mock = http.createServer((req, res) => {
       });
     }
     if (u.pathname === '/v1/videos') {
-      return send(200, { id: VIDEO_ID, video_id: VIDEO_ID, task_id: 'task_mock', status: 'queued' });
+      try { lastVideoBody = JSON.parse(body || '{}'); } catch { lastVideoBody = {}; }
+      // 提示词里带 RETRY 的，第一次故意返回 429 —— 用来验证客户端真的会退避重试，
+      // 而不是「遇到限流就把后面整批扔掉」
+      let prompt = '';
+      try { prompt = String((JSON.parse(body || '{}').prompt) || ''); } catch { prompt = ''; }
+      if (/RETRY/.test(prompt)) {
+        const seen = retryState.get(prompt) || 0;
+        retryState.set(prompt, seen + 1);
+        if (seen === 0) return send(429, { error: { message: 'rate limited' } });
+      }
+      // 每次创建返回不同的 id —— 批量提交时若复用同一个 id，
+      // 就没法验证「是不是真的提交了 N 个任务」
+      videoSeq++;
+      const id = videoSeq === 1 ? VIDEO_ID : `vid_mock_${String(videoSeq).padStart(3, '0')}`;
+      return send(200, { id, video_id: id, task_id: `task_${id}`, status: 'queued' });
     }
     send(404, { error: 'unknown path' });
+  });
+});
+
+// ── mock 图床：接收本地图片上传，返回公网地址 ────────────────
+let hostUploads = 0;
+const hostMock = http.createServer((req, res) => {
+  req.on('data', () => {});
+  req.on('end', () => {
+    hostUploads++;
+    const body = JSON.stringify({
+      success: true,
+      data: { url: `https://mock.host/img${hostUploads}.png`, display_url: `https://mock.host/img${hostUploads}.png` },
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
+    res.end(body);
   });
 });
 
@@ -119,6 +158,9 @@ async function api(method, url, body, headers = {}) {
 // ── 启动 ─────────────────────────────────────────────────────
 const mockPort = await listenAsync(mock, freePort());
 MOCK_BASE = `http://127.0.0.1:${mockPort}`;
+
+const hostPort = await listenAsync(hostMock, freePort());
+const HOST_BASE = `http://127.0.0.1:${hostPort}`;
 
 const srvPort = freePort() + 1;
 srv = spawn(NODE, [path.join(ROOT, 'server.js')], {
@@ -424,6 +466,185 @@ group('批量队列');
 
   const emptyBatch = await api('POST', '/api/batch/images', { items: [] });
   eq('空队列 400', emptyBatch.status, 400);
+}
+
+// ── 11b. 批量视频（用户报过「只能生成一个」，这里重点盯数量） ──
+group('批量视频');
+{
+  const before = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data.length;
+
+  const r = await api('POST', '/api/batch/videos', {
+    items: [
+      { prompt: 'video one', project_id: PROJECT_ID, mode: 'text_to_video' },
+      { prompt: 'video two', project_id: PROJECT_ID, mode: 'text_to_video' },
+      { prompt: 'video three', project_id: PROJECT_ID, mode: 'text_to_video' },
+    ],
+    concurrency: 1,
+    interval_ms: 0, // 测试里不等间隔，跑快点；默认间隔另有断言
+  });
+  eq('批量视频 200', r.status, 200);
+  eq('队列收 3 项', r.data.total, 3);
+
+  let job = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(400);
+    const j = await api('GET', `/api/batch/${r.data.jobId}`);
+    job = j.data;
+    if (job.status !== 'running') break;
+  }
+  eq('批量视频任务结束', job.status, 'done');
+  eq('三项都跑到了', job.done, 3);
+  eq('三项都提交成功', job.ok, 3);
+  eq('无失败', job.fail, 0);
+
+  const after = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  eq('库里真的多了 3 条视频任务', after.length - before, 3);
+
+  const ids = after.slice(0, 3).map((v) => v.agnes_video_id);
+  ok('三个任务拿到不同的 video_id', new Set(ids).size === 3, JSON.stringify(ids));
+  ok('每条都记录了提示词', after.slice(0, 3).every((v) => v.video_prompt), '');
+
+  // 带 storyboard_id 时也应逐个提交（分镜批量出视频的真实路径）
+  const sbs = await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=1`);
+  if (sbs.data.length) {
+    const r2 = await api('POST', '/api/batch/videos', {
+      items: sbs.data.slice(0, 2).map((s) => ({
+        prompt: `shot ${s.shot_number}`,
+        project_id: PROJECT_ID,
+        storyboard_id: s.id,
+        mode: 'text_to_video',
+      })),
+      concurrency: 1,
+      interval_ms: 0,
+    });
+    let job2 = null;
+    for (let i = 0; i < 40; i++) {
+      await sleep(400);
+      const j = await api('GET', `/api/batch/${r2.data.jobId}`);
+      job2 = j.data;
+      if (job2.status !== 'running') break;
+    }
+    eq('分镜批量出视频全部完成', job2.done, 2);
+    eq('分镜批量出视频无失败', job2.fail, 0);
+  }
+
+  // 限流重试：mock 对带 RETRY 的提示词第一次返回 429
+  const rl = await api('POST', '/api/videos', {
+    prompt: 'RETRY please',
+    project_id: PROJECT_ID,
+    mode: 'text_to_video',
+  });
+  eq('限流后重试成功 200', rl.status, 200);
+  eq('限流后重试成功', rl.data.ok, true);
+  ok('重试后拿到 video_id', !!rl.data.asset?.agnes_video_id, String(rl.data.asset?.agnes_video_id));
+
+  // 提交间隔：设成 1.2 秒，提交 2 个，任务总耗时应明显大于 1.2 秒
+  await api('PUT', '/api/settings', { video_submit_interval_ms: '1200' });
+  const ri = await api('POST', '/api/batch/videos', {
+    items: [
+      { prompt: 'interval one', project_id: PROJECT_ID },
+      { prompt: 'interval two', project_id: PROJECT_ID },
+    ],
+    concurrency: 1,
+  });
+  let job3 = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(300);
+    const j = await api('GET', `/api/batch/${ri.data.jobId}`);
+    job3 = j.data;
+    if (job3.status !== 'running') break;
+  }
+  const spent = new Date(job3.finished_at) - new Date(job3.started_at);
+  eq('间隔批量也全部完成', job3.done, 2);
+  ok('提交间隔生效', spent >= 1200, `耗时 ${spent}ms`);
+  await api('PUT', '/api/settings', { video_submit_interval_ms: '3000' });
+
+  // 视频跑完后要回填分镜状态，否则用户在分镜表上完全看不到进度
+  await sleep(3500);
+  const sbs2 = await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=1`);
+  const linked = sbs2.data.filter((s) => s.status === 'video_ready' || s.linked_video_id);
+  ok('视频完成后回填分镜状态', linked.length >= 1, `状态：${sbs2.data.map((s) => s.status).join(',')}`);
+}
+
+// ── 11c. 图床：本地图片 → 公网地址 → 图生视频 ────────────────
+group('图床与图生视频');
+{
+  await api('PUT', '/api/settings', {
+    image_host_type: 'custom',
+    image_host_endpoint: `${HOST_BASE}/upload`,
+    image_host_key: 'test-key',
+    auto_upload_image: '1',
+  });
+  const ih = await api('GET', '/api/imagehost');
+  eq('图床状态可读', ih.status, 200);
+  ok('图床已配置', ih.data.configured, JSON.stringify(ih.data));
+
+  const ht = await api('POST', '/api/imagehost/test', {});
+  eq('图床测试通过', ht.data.ok, true);
+  ok('测试确实上传了一张', hostUploads > 0, String(hostUploads));
+
+  // 生成一张本地图片（本地版默认落盘，只有本机地址）
+  const ir = await api('POST', '/api/agnes/image', {
+    prompt: 'host test image', project_id: PROJECT_ID, size: '1024x1024',
+  });
+  eq('本地图片生成成功', ir.data.ok, true);
+  const localUrl = ir.data.asset.url;
+  ok('图片只有本机地址', localUrl.startsWith('/assets/'), localUrl);
+
+  // 用本地地址提交图生视频：应自动上传后提交
+  const before = hostUploads;
+  const vr = await api('POST', '/api/videos', {
+    prompt: 'i2v from local image',
+    project_id: PROJECT_ID,
+    mode: 'image_to_video',
+    image: localUrl,
+  });
+  eq('图生视频提交成功', vr.data.ok, true);
+  ok('本地图片被上传到图床', hostUploads > before, `上传次数 ${hostUploads}`);
+  ok('提交给 Agnes 的是公网地址', /^https?:\/\//i.test(vr.data.asset.source_image_url), vr.data.asset.source_image_url);
+
+  // 同一张图第二次提交，应复用已保存的公网地址，不再重复上传
+  const mid = hostUploads;
+  const vr2 = await api('POST', '/api/videos', {
+    prompt: 'i2v again',
+    project_id: PROJECT_ID,
+    mode: 'image_to_video',
+    image: localUrl,
+  });
+  eq('第二次也成功', vr2.data.ok, true);
+  eq('不重复上传同一张图', hostUploads, mid);
+
+  // 已传过的图即使没配图床也能提交（公网地址已存下来），这是对的
+  await api('PUT', '/api/settings', { image_host_type: '', image_host_key: '' });
+  const reused = await api('POST', '/api/videos', {
+    prompt: 'reuse saved url', project_id: PROJECT_ID, mode: 'image_to_video', image: localUrl,
+  });
+  eq('已存公网地址的图无需图床也能提交', reused.data.ok, true);
+
+  // 没配图床 + 一张还没传过的本地图：必须明确报错，不能把无效参数发给 Agnes
+  const ir2 = await api('POST', '/api/agnes/image', {
+    prompt: 'never uploaded', project_id: PROJECT_ID, size: '1024x1024',
+  });
+  const bad = await api('POST', '/api/videos', {
+    prompt: 'no host', project_id: PROJECT_ID, mode: 'image_to_video', image: ir2.data.asset.url,
+  });
+  eq('未配图床时拒绝提交', bad.status, 400);
+  ok('错误说明指向图床配置', /图床/.test(bad.data.error || ''), bad.data.error);
+}
+
+// ── 11d. 高级参数通道（Agnes 以后新增能力时不用改代码） ───────
+group('高级参数通道');
+{
+  const r = await api('POST', '/api/videos', {
+    prompt: 'real prompt',
+    project_id: PROJECT_ID,
+    mode: 'text_to_video',
+    extra_params: { audio_url: 'https://a/b.mp3', custom_field: 7, prompt: '想覆盖主提示词' },
+  });
+  eq('带额外参数提交成功', r.data.ok, true);
+  eq('额外字段透传给 Agnes', lastVideoBody.audio_url, 'https://a/b.mp3');
+  eq('自定义字段透传', lastVideoBody.custom_field, 7);
+  eq('核心参数不被额外参数覆盖', lastVideoBody.prompt, 'real prompt');
 }
 
 // ── 12. 导入导出 ─────────────────────────────────────────────
