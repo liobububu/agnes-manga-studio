@@ -24,7 +24,7 @@
 
 ### Windows 单文件版
 
-从 [Releases](https://github.com/liobububu/agnes-manga-studio/releases) 下载 `AgnesMangaStudio-v1.0.1.exe`，双击启动。程序会自动打开本地浏览器页面。
+从 [Releases](https://github.com/liobububu/agnes-manga-studio/releases) 下载最新的 `AgnesMangaStudio-vX.Y.Z.exe`（当前 v1.0.3），双击启动。程序会自动打开本地浏览器页面。
 
 > GitHub Release 附件名不支持中文字符，故文件名使用 ASCII。下载后可重命名为 `Agnes漫剧工坊.exe`，不影响使用。
 
