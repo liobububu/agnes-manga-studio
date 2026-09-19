@@ -103,6 +103,15 @@ export default async function videos(container, params) {
           <label>Seed（留空随机）</label>
           <input class="input mono" id="f-seed" value="${esc(s.seed)}" placeholder="随机" />
         </div>
+        <div class="field">
+          <label>高级参数（JSON，可选）</label>
+          <textarea class="textarea mono" id="f-extra" rows="2" placeholder='{"字段名": "值"}'>${esc(s.extra || '')}</textarea>
+          <div class="hint">
+            Agnes 若新增了能力（例如音频驱动、新的控制字段），直接在这里传参就能用上，不用等程序更新。
+            已填的提示词、模型、尺寸等常规参数不会被这里覆盖。
+            目前 Agnes 官方公开的是文生视频、图生视频、多图参考和关键帧这几种。
+          </div>
+        </div>
       </div>`;
   }
 
@@ -122,6 +131,24 @@ export default async function videos(container, params) {
     if (seed) seed.oninput = () => { s.seed = seed.value; };
     const res = container.querySelector('#f-res');
     if (res) res.onchange = () => { s.res = Number(res.value); };
+    const extra = container.querySelector('#f-extra');
+    if (extra) extra.oninput = () => { s.extra = extra.value; };
+  }
+
+  /** 解析高级参数；不是合法 JSON 就拦下来，别把坏参数发给 Agnes */
+  function readExtraParams(key) {
+    const raw = String(S[key].extra || '').trim();
+    if (!raw) return undefined;
+    let parsed = null;
+    try { parsed = JSON.parse(raw); } catch {
+      toast.err('高级参数不是合法 JSON，请检查后重试');
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      toast.err('高级参数必须是一个 JSON 对象');
+      return null;
+    }
+    return parsed;
   }
 
   function renderForm() {
@@ -143,10 +170,25 @@ export default async function videos(container, params) {
         <div class="section-label">输入素材</div>
         <div class="field"><label>参考图片（公网可访问 URL）</label>
           <input class="input mono" id="f-image" placeholder="https://…" value="${esc(S.i2v.image)}" />
-          ${images.length ? `<select class="select select-sm" id="f-img-pick" style="margin-top:8px">
-            <option value="">或从素材库选择…</option>
-            ${images.filter((i) => i.remote_url).map((i) => `<option value="${esc(i.remote_url)}">${esc(i.name)}</option>`).join('')}
-          </select>` : ''}
+          ${(() => {
+            // 配了图床：本机图片也能选，提交时后端自动上传成公网地址
+            const usable = (state.imageHost && state.imageHost.configured)
+              ? images
+              : images.filter((i) => i.remote_url);
+            if (usable.length) {
+              return `<select class="select select-sm" id="f-img-pick" style="margin-top:8px">
+                <option value="">或从素材库选择…</option>
+                ${usable.map((i) => `<option value="${esc(i.remote_url || i.url)}">${esc(i.name)}</option>`).join('')}
+              </select>`;
+            }
+            // 一张都选不了时，别丢一个空下拉——用户会以为是功能坏了
+            return images.length
+              ? `<div class="hint" style="margin-top:8px;color:var(--warn)">
+                   素材库里的图片都只有本机地址，Agnes 抓不到。
+                   到「设置 → 图床」配一个免费图床后即可直接选用，或在「素材库」手动填公网 URL。
+                 </div>`
+              : '';
+          })()}
           <div class="hint">图生视频需要 Agnes 能抓到的公网图片。本地图片请先上传公网图床。</div>
           <div id="img-preview" style="margin-top:8px"></div>
         </div>
@@ -273,6 +315,11 @@ export default async function videos(container, params) {
         frame_rate: 24, seed: S.kf.seed || undefined,
       });
     }
+
+    // 高级参数：解析失败就不提交，别把坏参数发给 Agnes
+    const extra = readExtraParams(mode);
+    if (extra === null) return;
+    if (extra) payload.extra_params = extra;
 
     submitting = true;
     const btn = container.querySelector('#submit');

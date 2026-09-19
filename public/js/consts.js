@@ -224,6 +224,17 @@ export function relTime(iso) {
   return fmtDate(iso);
 }
 
+/**
+ * 把分镜的「时长（秒）」换算成 Agnes 的 num_frames。
+ * Agnes 要求 8n+1、最大 441，所以先按 24fps 算出帧数再套到最近的 8n+1。
+ * 批量出视频时用它，镜头长的才不会被一律砍成 5 秒。
+ */
+export function framesForDuration(seconds, fps = 24) {
+  const sec = Number(seconds) || 5;
+  const frames = Math.round((sec * fps) / 8) * 8 + 1;
+  return Math.max(9, Math.min(441, frames));
+}
+
 export function fmtBytes(n) {
   const b = Number(n) || 0;
   if (b < 1024) return `${b} B`;

@@ -19,6 +19,7 @@ const agnes = require('./lib/agnes.js');
 const jobs = require('./lib/jobs.js');
 const seed = require('./lib/seed.js');
 const createRoutes = require('./lib/routes.js');
+const imagehost = require('./lib/imagehost.js');
 
 let pass = 0;
 let fail = 0;
@@ -196,6 +197,55 @@ group('Agnes 工具');
   store.setModelCacheError('暂时失败');
   eq('失败只记录错误不清空模型', store.getModels().models.length, 1);
   eq('模型缓存错误可读', store.getModels().error, '暂时失败');
+}
+
+// ── 5b. 图床（本地图片 → 公网地址，图生视频的关键链路） ──────
+group('图床');
+{
+  store._resetForTest();
+  eq('未配置时 config 为空', imagehost.config(), null);
+  ok('未配置时 isConfigured 为假', !imagehost.isConfigured());
+
+  ok('内置三种图床', Object.keys(imagehost.HOSTS).length === 3, Object.keys(imagehost.HOSTS).join(','));
+
+  // 本地素材地址还原成本机路径
+  const p = imagehost.localPathFromAssetUrl('/assets/images/abc.png');
+  ok('还原本地图片路径', !!p && String(p).endsWith('abc.png') && String(p).includes('images'), String(p));
+  eq('公网地址不还原', imagehost.localPathFromAssetUrl('https://x.com/a.png'), null);
+  eq('非素材路径不还原', imagehost.localPathFromAssetUrl('/other/a.png'), null);
+
+  // 不同图床返回格式都要能解析出地址
+  eq('解析 imgbb 响应', imagehost.pickUrl({ data: { url: 'https://i.ibb.co/a.png' } }), 'https://i.ibb.co/a.png');
+  eq('解析 display_url', imagehost.pickUrl({ data: { display_url: 'https://i.ibb.co/b.png' } }), 'https://i.ibb.co/b.png');
+  eq('解析 SM.MS 响应', imagehost.pickUrl({ data: { url: 'https://s2.loli.net/c.png' } }), 'https://s2.loli.net/c.png');
+  eq('解析嵌套 image.url', imagehost.pickUrl({ data: { image: { url: 'https://h/d.png' } } }), 'https://h/d.png');
+  eq('解析 link 字段', imagehost.pickUrl({ link: 'https://h/e.png' }), 'https://h/e.png');
+  eq('没有地址时返回空', imagehost.pickUrl({ success: true }), '');
+  eq('非 http 地址不认', imagehost.pickUrl({ data: { url: '/local/a.png' } }), '');
+
+  // 没配图床就上传，必须明确报错，而不是静默失败
+  let threw = false;
+  try { await imagehost.uploadFile('/no/such/file.png'); } catch { threw = true; }
+  ok('未配置图床时上传报错', threw);
+
+  // 配了之后读得到，但不真发请求
+  store.setSettings({ image_host_type: 'imgbb', image_host_key: 'k-test' });
+  const cfg = imagehost.config();
+  ok('配置后可读到', !!cfg);
+  eq('图床类型', cfg.type, 'imgbb');
+  eq('接口地址', cfg.endpoint, 'https://api.imgbb.com/1/upload');
+  ok('配置后 isConfigured 为真', imagehost.isConfigured());
+
+  // 密钥传空表示不修改：避免用户在设置页点保存就把 Key 清掉
+  store.setSettings({ image_host_key: '' });
+  eq('空密钥不覆盖已保存的值', store.getRawKey(), '');
+  eq('图床 Key 保持原值', store.getSettings().image_host_key, 'k-test');
+
+  // 自定义图床必须填接口地址，否则视为没配
+  store.setSettings({ image_host_type: 'custom' });
+  eq('自定义图床缺地址时视为未配置', imagehost.config(), null);
+  store.setSettings({ image_host_endpoint: 'https://my.host/upload' });
+  eq('填了地址后可用', imagehost.config().endpoint, 'https://my.host/upload');
 }
 
 // ── 6. 批量队列 ──────────────────────────────────────────────

@@ -34,6 +34,9 @@ export const api = {
 
   settings: () => req('GET', '/api/settings'),
   models: () => req('GET', '/api/models'),
+  imageHost: () => req('GET', '/api/imagehost'),
+  testImageHost: () => req('POST', '/api/imagehost/test', {}),
+  uploadImageHost: (imageId) => req('POST', '/api/imagehost/upload', { image_id: imageId }),
   refreshModels: () => req('POST', '/api/models/refresh', {}),
   saveSettings: (patch) => req('PUT', '/api/settings', patch),
   testSettings: (kind) => req('POST', '/api/settings/test', { kind }),

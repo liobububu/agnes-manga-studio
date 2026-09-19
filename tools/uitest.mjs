@@ -11,7 +11,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -238,6 +238,45 @@ group('用户系统残留检查');
   }
   ok('不存在登录页面文件', !fs.existsSync(path.join(PUB, 'js', 'pages', 'login.js')));
   ok('不存在注册页面文件', !fs.existsSync(path.join(PUB, 'js', 'pages', 'register.js')));
+}
+
+// ── 9. 前端工具函数（真跑一遍，不只看代码） ────────────────
+group('前端工具函数');
+{
+  const consts = await import(pathToFileURL(path.join(PUB, 'js', 'consts.js')).href);
+
+  // 分镜时长 → Agnes num_frames（8n+1，上限 441）
+  ok('5 秒 → 121 帧', consts.framesForDuration(5) === 121, String(consts.framesForDuration(5)));
+  ok('10 秒 → 241 帧', consts.framesForDuration(10) === 241, String(consts.framesForDuration(10)));
+  ok('3 秒 → 73 帧', consts.framesForDuration(3) === 73, String(consts.framesForDuration(3)));
+  ok('超长夹到 441', consts.framesForDuration(100) === 441, String(consts.framesForDuration(100)));
+  ok('非法输入回退默认', consts.framesForDuration('abc') === 121, String(consts.framesForDuration('abc')));
+  ok('0 秒也合法', consts.framesForDuration(0) === 121, String(consts.framesForDuration(0)));
+  for (const s of [1, 2, 3, 5, 8, 10, 15, 18]) {
+    const f = consts.framesForDuration(s);
+    ok(`${s} 秒满足 8n+1 且 ≤441`, f <= 441 && f >= 9 && (f - 1) % 8 === 0, String(f));
+  }
+
+  // 动态模型下拉：新模型要能被选到，且不能串到别的模态
+  const dir = {
+    models: [
+      { id: 'agnes-text-new', kind: 'text' },
+      { id: 'agnes-image-new', kind: 'image' },
+      { id: 'agnes-video-new', kind: 'video' },
+      { id: 'mystery-model', kind: 'unknown' },
+    ],
+  };
+  const text = consts.modelChoices(dir, 'text', ['old-text']);
+  const image = consts.modelChoices(dir, 'image', ['old-image']);
+  const video = consts.modelChoices(dir, 'video', ['old-video']);
+  ok('文本模型含新文本模型', text.some((m) => m.value === 'agnes-text-new'), JSON.stringify(text));
+  ok('文本模型不含图片模型', !text.some((m) => m.value === 'agnes-image-new'));
+  ok('文本模型保留旧模型回退', text.some((m) => m.value === 'old-text'));
+  ok('图片模型含新图片模型', image.some((m) => m.value === 'agnes-image-new'), JSON.stringify(image));
+  ok('图片模型不含视频模型', !image.some((m) => m.value === 'agnes-video-new'));
+  ok('视频模型含新视频模型', video.some((m) => m.value === 'agnes-video-new'), JSON.stringify(video));
+  ok('空目录也能给出回退项', consts.modelChoices({ models: [] }, 'text', ['fallback-1']).length === 1);
+  ok('未知类型模型不被丢弃', text.some((m) => m.value === 'mystery-model'), JSON.stringify(text));
 }
 
 console.log(`\n${'═'.repeat(52)}`);

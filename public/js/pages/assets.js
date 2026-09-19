@@ -80,6 +80,9 @@ export default async function assets(container, params) {
             </div>
             <div class="btm">
               <span class="mini-btn">${esc(IMAGE_USAGES.find((u) => u.value === img.usage_type)?.label || img.usage_type || '图片')}</span>
+              ${img.remote_url
+                ? '<span class="mini-btn" style="background:rgba(52,211,153,0.30)" title="有公网地址，可用于图生视频">可图生视频</span>'
+                : '<span class="mini-btn" style="background:rgba(255,159,10,0.26)" title="只有本机地址，Agnes 抓不到，需填公网 URL">仅本机</span>'}
               <button class="mini-btn" data-cp="${esc(img.id)}">复制提示词</button>
               <button class="mini-btn gold" data-vid="${esc(img.id)}">${icon('video', 11)}生成视频</button>
             </div>
@@ -175,8 +178,44 @@ export default async function assets(container, params) {
           title: img.name,
           wide: true,
           body: `<img src="${esc(img.url)}" style="width:100%;border-radius:14px" />
-            <pre class="json-out" style="margin-top:14px">${esc(img.generation_prompt || '')}</pre>`,
-          footer: `<a class="btn btn-primary" href="${esc(img.url)}" download="${esc(img.name)}.png">下载</a>`,
+            <div class="field" style="margin-top:14px">
+              <label>公网访问 URL（图生视频要用）</label>
+              <input class="input mono" id="pub-url" value="${esc(img.remote_url || '')}" placeholder="https://…" />
+              <div class="hint">Agnes 图生视频只能抓公网图片。本机生成的图没有公网地址，
+                需要你先传到图床，再把链接填进这里；填了之后，关联这张图的分镜就能走图生视频。</div>
+            </div>
+            <div class="section-label" style="margin-top:14px">生成提示词</div>
+            <pre class="json-out">${esc(img.generation_prompt || '')}</pre>`,
+          footer: `
+            ${state.imageHost && state.imageHost.configured
+              ? `<button class="btn" id="upload-host">${icon('cloud', 13)}上传到图床</button>`
+              : `<button class="btn" id="go-host">${icon('cloud', 13)}去配置图床</button>`}
+            <button class="btn" id="save-url">保存公网 URL</button>
+            <a class="btn btn-primary" href="${esc(img.url)}" download="${esc(img.name)}.png">下载</a>`,
+          onMount(root, close) {
+            const up = root.querySelector('#upload-host');
+            if (up) {
+              up.onclick = async () => {
+                up.disabled = true;
+                up.innerHTML = `<div class="spinner sm"></div>上传中…`;
+                const r = await api.uploadImageHost(img.id);
+                if (r.ok) { toast.ok('已上传到图床，这张图现在可用于图生视频'); load(); close(); } else {
+                  up.disabled = false;
+                  up.innerHTML = `${icon('cloud', 13)}上传到图床`;
+                  toast.err(r.error);
+                }
+              };
+            }
+            const go = root.querySelector('#go-host');
+            if (go) go.onclick = () => { close(); navigate('settings'); };
+            root.querySelector('#save-url').onclick = async () => {
+              const url = root.querySelector('#pub-url').value.trim();
+              if (url && !/^https?:\/\//i.test(url)) { toast.err('必须是 http(s) 开头的公网地址'); return; }
+              const r = await api.updateImage(img.id, { remote_url: url });
+              if (r.ok) { toast.ok(url ? '已保存，这张图现在可用于图生视频' : '已清除公网 URL'); load(); close(); }
+              else toast.err(r.error);
+            };
+          },
         });
       };
     });
