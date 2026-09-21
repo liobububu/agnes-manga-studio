@@ -881,6 +881,45 @@ group('级联删除');
   eq('分镜已清空', left.data.length, 0);
 }
 
+// ── 17. 素材 Range 请求 ──────────────────────────────────────
+// 「镜头任务」页用 <video controls> 预览本地视频，拖进度条时浏览器会发
+// Range 请求。以前服务端声明了 Accept-Ranges 却始终回 200 整个文件，
+// 每拖一下都要把几十 MB 重下一遍。
+group('素材 Range 请求');
+{
+  const dir = path.join(HOME, 'assets', 'videos');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'range.mp4'), Buffer.alloc(1000, 7));
+
+  const full = await fetch(`${BASE}/assets/videos/range.mp4`);
+  eq('整份请求 200', full.status, 200);
+  eq('声明支持 Range', full.headers.get('accept-ranges'), 'bytes');
+  eq('无 Range 时回全量', (Buffer.from(await full.arrayBuffer())).length, 1000);
+
+  const r1 = await fetch(`${BASE}/assets/videos/range.mp4`, { headers: { Range: 'bytes=100-199' } });
+  eq('区间请求 206', r1.status, 206);
+  eq('Content-Range 正确', r1.headers.get('content-range'), 'bytes 100-199/1000');
+  eq('区间只回 100 字节', (Buffer.from(await r1.arrayBuffer())).length, 100);
+
+  const r2 = await fetch(`${BASE}/assets/videos/range.mp4`, { headers: { Range: 'bytes=900-' } });
+  eq('开放区间 206', r2.status, 206);
+  eq('开放区间回剩余部分', (Buffer.from(await r2.arrayBuffer())).length, 100);
+
+  const r3 = await fetch(`${BASE}/assets/videos/range.mp4`, { headers: { Range: 'bytes=-50' } });
+  eq('后缀区间 206', r3.status, 206);
+  eq('后缀区间回 50 字节', (Buffer.from(await r3.arrayBuffer())).length, 50);
+
+  const bad = await fetch(`${BASE}/assets/videos/range.mp4`, { headers: { Range: 'bytes=5000-6000' } });
+  eq('越界区间 416', bad.status, 416);
+
+  // 之前 serveAsset 只认 images / videos，audios 会 404
+  const adir = path.join(HOME, 'assets', 'audios');
+  fs.mkdirSync(adir, { recursive: true });
+  fs.writeFileSync(path.join(adir, 'a.mp3'), Buffer.from('MP3DATA'));
+  const au = await fetch(`${BASE}/assets/audios/a.mp3`);
+  eq('audios 素材可访问', au.status, 200);
+}
+
 // ── 收尾 ─────────────────────────────────────────────────────
 srv.kill();
 mock.close();

@@ -23,7 +23,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.0.7';
+const VERSION = '1.0.8';
 /** 改动前端后递增，exe 会在下次启动重新释放页面 */
 const ASSETS_VERSION = VERSION;
 
@@ -216,23 +216,75 @@ function serveStatic(req, res, urlPath) {
   fs.createReadStream(file).pipe(res);
 }
 
+/**
+ * 解析 Range 头。抽成纯函数是为了能单测——
+ * 边界情况（bytes=-500 后缀区间、start 越界、start>end）靠手点视频条试不出来。
+ * @returns {{start:number,end:number}|null|'invalid'}
+ *   null = 没有 Range 头或头不合法到可以忽略；'invalid' = 应回 416
+ */
+function parseRange(header, size) {
+  const raw = String(header || '').trim();
+  if (!raw) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(raw);
+  if (!m) return null;               // 不是 bytes 单位，按整份返回
+  const [, a, b] = m;
+  if (a === '' && b === '') return null;
+
+  let start;
+  let end;
+  if (a === '') {                    // bytes=-500 → 最后 500 字节
+    start = Math.max(0, size - Number(b));
+    end = size - 1;
+  } else {
+    start = Number(a);
+    end = b === '' ? size - 1 : Number(b);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return 'invalid';
+  if (start < 0 || start >= size || start > end) return 'invalid';
+  return { start, end: Math.min(end, size - 1) };
+}
+
 function serveAsset(req, res, urlPath) {
-  // /assets/images/xxx.png  /assets/videos/xxx.mp4
+  // /assets/images/xxx.png  /assets/videos/xxx.mp4  /assets/audios/xxx.mp3
   const parts = urlPath.split('/').filter(Boolean);
   if (parts.length < 3) return sendText(res, 404, 'Not Found');
   const kind = parts[1];
   const name = path.basename(parts.slice(2).join('/'));
-  const dir = kind === 'videos' ? store.videosDir() : kind === 'images' ? store.imagesDir() : null;
+  const dir = kind === 'videos' ? store.videosDir()
+    : kind === 'images' ? store.imagesDir()
+      : kind === 'audios' ? store.audiosDir() : null;
   if (!dir) return sendText(res, 404, 'Not Found');
   const file = safeResolve(dir, name);
   if (!file || !fs.existsSync(file)) return sendText(res, 404, 'Not Found');
+
+  const size = fs.statSync(file).size;
   const ext = path.extname(file).toLowerCase();
-  const stat = fs.statSync(file);
-  res.writeHead(200, {
+  const base = {
     'Content-Type': MIME[ext] || 'application/octet-stream',
-    'Content-Length': stat.size,
     'Accept-Ranges': 'bytes',
-  });
+    'Cache-Control': 'no-cache',
+  };
+
+  // 「镜头任务」页的 <video controls> 拖进度条时浏览器会发 Range 请求。
+  // 以前这里只声明了 Accept-Ranges 却始终回 200 整个文件，
+  // 结果每拖一下都要把几十 MB 的视频重下一遍。
+  const range = parseRange(req.headers.range, size);
+  if (range === 'invalid') {
+    res.writeHead(416, Object.assign({ 'Content-Range': `bytes */${size}` }, base));
+    return res.end();
+  }
+  if (range) {
+    res.writeHead(206, Object.assign({
+      'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
+      'Content-Length': range.end - range.start + 1,
+    }, base));
+    if (req.method === 'HEAD') { res.end(); return; }
+    fs.createReadStream(file, { start: range.start, end: range.end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, Object.assign({ 'Content-Length': size }, base));
+  if (req.method === 'HEAD') { res.end(); return; }
   fs.createReadStream(file).pipe(res);
 }
 
@@ -355,4 +407,4 @@ process.on('SIGINT', () => { console.log('\n正在退出…'); process.exit(0); 
 
 if (require.main === module) listen(START_PORT);
 
-module.exports = { server, listen, APP_HOME, VERSION };
+module.exports = { server, listen, APP_HOME, VERSION, parseRange, safeResolve };
