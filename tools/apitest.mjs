@@ -791,6 +791,41 @@ group('音频生视频');
     JSON.stringify(saved?.source_audios));
 }
 
+// ── 11g. 2.5 的素材上限要在提交前拦住 ────────────────────────
+// 超限会被 Agnes 直接 400，用户只看得到一句看不懂的失败。
+// 前端 UI 挡住了多图上限，但接口层面原本是裸奔的。
+group('2.5 素材上限');
+{
+  const many = Array.from({ length: 9 }, (_, i) => ({ url: `https://cdn.example.com/${i}.png`, role: '参考' }));
+  const r = await api('POST', '/api/videos', {
+    prompt: 'too many images', project_id: PROJECT_ID,
+    model: 'agnes-video-2.5', source_images: many,
+  });
+  eq('图片超 8 张被拦', r.status, 400);
+  ok('提示说明上限和当前数量', /8/.test(r.data.error || '') && /9/.test(r.data.error || ''), r.data.error);
+
+  const ok8 = await api('POST', '/api/videos', {
+    prompt: 'exactly 8', project_id: PROJECT_ID,
+    model: 'agnes-video-2.5', source_images: many.slice(0, 8),
+  });
+  eq('正好 8 张放行', ok8.status, 200);
+
+  // 合计上限：8 图 + 3 音频 = 11 应该放行，再多就超 12
+  const mix = await api('POST', '/api/videos', {
+    prompt: 'mix', project_id: PROJECT_ID, model: 'agnes-video-2.5',
+    source_images: many.slice(0, 8),
+    audios: ['https://a/1.mp3', 'https://a/2.mp3', 'https://a/3.mp3'],
+  });
+  eq('8 图 + 3 音频放行', mix.status, 200);
+
+  // 2.0 不该被 2.5 的限制误伤
+  const old = await api('POST', '/api/videos', {
+    prompt: 'v20 many', project_id: PROJECT_ID,
+    model: 'agnes-video-v2.0', source_images: many,
+  });
+  eq('2.0 不受 2.5 限制影响', old.status, 200);
+}
+
 // ── 12. 导入导出 ─────────────────────────────────────────────
 group('导入导出');
 {
