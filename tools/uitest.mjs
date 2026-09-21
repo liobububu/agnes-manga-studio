@@ -301,6 +301,26 @@ group('前端工具函数');
   ok('模式表里含音频生视频', consts.VIDEO_MODES.some((m) => m.id === 'audio'));
 }
 
+// ── 批量并发：视频必须串行，且界面要讲清楚 ────────────────────
+// 后端并不强制视频串行（传多少就是多少），真正的安全保证在前端固定传 1。
+// 并发提交碰上重试会重复扣费，这条只能靠断言锁，手点看不出来。
+group('批量并发');
+{
+  const sb = read(path.join(PUB, 'js', 'pages', 'storyboards.js'));
+  const m = /batchVideos\(\{[^}]*concurrency:\s*(\d+)/.exec(sb);
+  ok('分镜页批量视频显式串行', !!m && m[1] === '1', m ? m[1] : '没传 concurrency');
+
+  // 设置项叫「默认并发数」，但只对生图生效 —— 界面上不说就是误导
+  const st = read(path.join(PUB, 'js', 'pages', 'settings.js'));
+  const label = /批量默认并发数[^<]*/i.exec(st);
+  ok('设置项标注只对图片生效', !!label && /图片/.test(label[0]), label ? label[0] : '找不到该设置项');
+  ok('设置项说明了视频串行', /视频.*串行/.test(st), '缺少视频串行的说明');
+
+  // 并发数写进 job 才能被断言，否则只能靠计时猜
+  const jobsSrc = read(path.join(ROOT, 'lib', 'jobs.js'));
+  ok('job 记录了 concurrency', /concurrency:\s*null/.test(jobsSrc) && /job\.concurrency\s*=/.test(jobsSrc));
+}
+
 // ── 前后端对「哪个模型是 2.5」的判断必须一致 ──────────────────
 group('2.5 判定前后端一致');
 {

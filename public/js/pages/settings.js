@@ -205,8 +205,9 @@ export default async function settings(container, params = {}) {
             <input class="input" id="t-interval" type="number" min="2" value="${esc(settings.video_poll_interval || 8)}" /></div>
           <div class="field"><label>最大轮询次数</label>
             <input class="input" id="t-max" type="number" min="1" value="${esc(settings.video_max_polls || 60)}" /></div>
-          <div class="field"><label>批量默认并发数</label>
-            <input class="input" id="t-conc" type="number" min="1" max="8" value="${esc(settings.default_concurrent_tasks || 3)}" /></div>
+          <div class="field"><label>批量默认并发数（图片）</label>
+            <input class="input" id="t-conc" type="number" min="1" max="8" value="${esc(settings.default_concurrent_tasks || 3)}" />
+            <div class="hint">只对批量生图生效。批量视频固定串行提交——并发提交一旦超时重试，容易重复扣费。</div></div>
           <div class="field"><label>提交超时（毫秒）</label>
             <input class="input" id="t-timeout" type="number" min="10000" step="5000" value="${esc(settings.request_timeout_ms || 150000)}" /></div>
         </div>

@@ -497,6 +497,21 @@ group('批量队列');
   const before = (await api('GET', `/api/images?project_id=${PROJECT_ID}`)).data.length;
   ok('批量生成的图片已入库', before >= 3, `${before} 张`);
 
+  // 并发数要能观测，否则「设置了但没生效」这种问题只能靠计时猜
+  eq('图片批量用了请求里的并发数', job.concurrency, 2);
+
+  const noConc = await api('POST', '/api/batch/images', {
+    items: [{ prompt: 'img three', project_id: PROJECT_ID, size: '1024x1024' }],
+  });
+  let job2 = null;
+  for (let i = 0; i < 30; i++) {
+    await sleep(300);
+    const j = await api('GET', `/api/batch/${noConc.data.jobId}`);
+    job2 = j.data;
+    if (job2.status !== 'running') break;
+  }
+  ok('未指定并发时回落到设置值', job2.concurrency === 3, String(job2.concurrency));
+
   const emptyBatch = await api('POST', '/api/batch/images', { items: [] });
   eq('空队列 400', emptyBatch.status, 400);
 }
@@ -529,6 +544,8 @@ group('批量视频');
   eq('三项都跑到了', job.done, 3);
   eq('三项都提交成功', job.ok, 3);
   eq('无失败', job.fail, 0);
+
+  eq('视频批量并发按请求值走', job.concurrency, 1);
 
   const after = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
   eq('库里真的多了 3 条视频任务', after.length - before, 3);
