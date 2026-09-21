@@ -293,12 +293,17 @@ export default async function editor(container, params) {
           ${d.transitions.map((t) => `第 ${t.after_clip_index + 1} 段后：${esc(t.type)} ${t.duration}s`).join('<br>')}
         </div>` : ''}
       <div class="section-label" style="margin-top:12px">ffmpeg concat 清单</div>
-      <textarea class="textarea mono" rows="3" readonly>${esc(d.ffmpeg_concat)}</textarea>`;
+      <textarea class="textarea mono" rows="3" readonly>${esc(d.ffmpeg_concat)}</textarea>
+      <div class="section-label" style="margin-top:12px">
+        SRT 字幕${d.srt_count ? `（${d.srt_count} 条，可直接导入 OpenReel）` : '（本集分镜没填台词）'}
+      </div>
+      <textarea class="textarea mono" rows="4" readonly>${esc(d.srt || '（无台词）')}</textarea>`;
     modal({
       title: '导出交接清单',
       wide: true,
       body,
       footer: `<button class="btn" data-no>关闭</button>
+               ${d.srt_count ? `<button class="btn" data-srt>${icon('download', 13)}下载字幕 .srt</button>` : ''}
                <button class="btn btn-primary" data-copy>${icon('copy', 13)}复制片段清单</button>`,
       onMount(root, close) {
         root.querySelector('[data-no]').onclick = close;
@@ -307,6 +312,19 @@ export default async function editor(container, params) {
           try { await navigator.clipboard.writeText(text); toast.ok('已复制'); }
           catch { toast.err('复制失败，请手动选中'); }
         };
+        const srtBtn = root.querySelector('[data-srt]');
+        if (srtBtn) {
+          srtBtn.onclick = () => {
+            // BOM 不能少：没有 BOM 的话中文台词在不少播放器里会乱码
+            const blob = new Blob(['\uFEFF' + d.srt], { type: 'text/plain;charset=utf-8' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${d.plan.name}.srt`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            toast.ok('字幕已下载');
+          };
+        }
       },
     });
   }

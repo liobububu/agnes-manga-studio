@@ -116,6 +116,10 @@ group('导入导出');
   const dump2 = store.exportProject(a.id);
   ok('项目导出带剪辑方案', Array.isArray(dump2.edit_plans) && dump2.edit_plans.length === 1,
     JSON.stringify(dump2.edit_plans || []).slice(0, 120));
+  // 导出的集合范围必须跟着 COLLECTIONS 走，写死的话加表就会漏
+  const scoped = store.COLLECTIONS.filter((c) => c !== 'projects' && c !== 'prompt_templates');
+  ok('项目导出覆盖所有项目级集合', scoped.every((c) => Array.isArray(dump2[c])),
+    scoped.filter((c) => !Array.isArray(dump2[c])).join(','));
 
   const all = store.exportAll();
   // 别写死数量：加一张新表就该跟着变，写死的话每次加表都要来改断言

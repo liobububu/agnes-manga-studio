@@ -895,6 +895,27 @@ group('剪辑台');
   ok('ffmpeg 清单有 2 行', ex.data.ffmpeg_concat.split('\n').length === 2, ex.data.ffmpeg_concat);
   eq('OpenReel 清单按镜头号排序', ex.data.openreel.order.join(','), '1,2');
 
+  // 3b) SRT 字幕：OpenReel 支持导入 SRT，格式必须精确（逗号分隔毫秒）
+  const srtPlan = await api('POST', '/api/edit-plans', {
+    project_id: PROJECT_ID, episode_number: ep, name: '字幕验收',
+    clips: [
+      { shot_number: 1, name: '镜头一', duration: 4, trim_in: 0, trim_out: 4, dialogue: '你好', enabled: true },
+      { shot_number: 2, name: '镜头二', duration: 6, trim_in: 1, trim_out: 5, dialogue: '再见', enabled: true },
+      { shot_number: 3, name: '没台词', duration: 3, trim_in: 0, trim_out: 3, dialogue: '', enabled: true },
+    ],
+  });
+  const srtEx = await api('GET', `/api/edit-plans/${srtPlan.data.id}/export`);
+  eq('字幕条数只算有台词的', srtEx.data.srt_count, 2);
+  const srt = srtEx.data.srt;
+  ok('SRT 序号从 1 开始', srt.startsWith('1\n'), JSON.stringify(srt.slice(0, 30)));
+  ok('SRT 时间码用逗号分隔毫秒', /00:00:00,000 --> 00:00:04,000/.test(srt), srt);
+  ok('第二条起点接在第一条之后', /00:00:04,000 --> 00:00:08,000/.test(srt), srt);
+  ok('SRT 含台词', srt.includes('你好') && srt.includes('再见'));
+  ok('没台词的镜头不产生字幕块', !/00:00:08,000 --> 00:00:11,000/.test(srt), srt);
+  // 块之间必须有空行，否则很多播放器会把两段连成一条
+  ok('SRT 块之间有空行', /\n\n/.test(srt), JSON.stringify(srt));
+  eq('SRT 块数 = 2', srt.trim().split(/\n\s*\n/).length, 2);
+
   // 4) 非法入出点要被夹回，不能算出负时长
   const bad = await api('POST', '/api/edit-plans', {
     project_id: PROJECT_ID, episode_number: ep,
