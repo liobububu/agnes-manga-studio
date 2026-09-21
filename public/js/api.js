@@ -33,7 +33,6 @@ export const api = {
   stats: () => req('GET', '/api/stats'),
 
   settings: () => req('GET', '/api/settings'),
-  models: () => req('GET', '/api/models'),
   imageHost: () => req('GET', '/api/imagehost'),
   testImageHost: () => req('POST', '/api/imagehost/test', {}),
   uploadImageHost: (imageId) => req('POST', '/api/imagehost/upload', { image_id: imageId }),
@@ -49,7 +48,6 @@ export const api = {
 
   scripts: (projectId) => req('GET', `/api/scripts${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   createScript: (s) => req('POST', '/api/scripts', s),
-  updateScript: (id, s) => req('PUT', `/api/scripts/${id}`, s),
   deleteScript: (id) => req('DELETE', `/api/scripts/${id}`),
 
   storyboards: (projectId, episode) => {
@@ -66,7 +64,6 @@ export const api = {
   clearStoryboards: (projectId, episode) => req('DELETE', `/api/storyboards?project_id=${encodeURIComponent(projectId)}&episode=${episode}`),
 
   images: (projectId) => req('GET', `/api/images${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
-  createImage: (a) => req('POST', '/api/images', a),
   updateImage: (id, a) => req('PUT', `/api/images/${id}`, a),
   deleteImage: (id) => req('DELETE', `/api/images/${id}`),
   genImage: (p) => req('POST', '/api/agnes/image', p),
@@ -81,7 +78,6 @@ export const api = {
   batchRefreshVideos: () => req('POST', '/api/videos/batch-refresh', {}),
 
   tasks: (type) => req('GET', `/api/tasks${type ? `?task_type=${type}` : ''}`),
-  createTask: (t) => req('POST', '/api/tasks', t),
   updateTask: (id, t) => req('PUT', `/api/tasks/${id}`, t),
   deleteTask: (id) => req('DELETE', `/api/tasks/${id}`),
 
@@ -94,9 +90,7 @@ export const api = {
 
   batchImages: (p) => req('POST', '/api/batch/images', p),
   batchVideos: (p) => req('POST', '/api/batch/videos', p),
-  batch: (id) => req('GET', `/api/batch/${id}`),
   cancelBatch: (id) => req('POST', `/api/batch/${id}/cancel`, {}),
 
   importData: (data, mode) => req('POST', '/api/import', { data, mode }),
-  logs: () => req('GET', '/api/logs'),
 };

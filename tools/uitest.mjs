@@ -156,6 +156,13 @@ group('API 方法');
   for (const n of used) {
     ok(`api.${n} 已定义`, defined.has(n));
   }
+
+  // 反向：定义了却没人用的方法就是死代码。
+  // 之前攒了 6 个（models / updateScript / createImage / createTask / batch / logs），
+  // 光查「用了的是否有定义」永远发现不了。
+  const dead = [...defined].filter((n) => !used.has(n));
+  ok('api 里没有未被调用的方法', dead.length === 0, dead.join(','));
+  ok('api 方法数量合理', defined.size >= 20, `${defined.size} 个`);
 }
 
 // ── 6. 后端接口覆盖 ──────────────────────────────────────────
