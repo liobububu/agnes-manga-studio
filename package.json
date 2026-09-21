@@ -1,6 +1,6 @@
 {
   "name": "agnes-studio",
-  "version": "1.1.6",
+  "version": "1.2.1",
   "private": true,
   "description": "Agnes 漫剧工坊 · 本地版 — 去掉用户系统与云端依赖的 AI 漫剧制作工作台。项目/剧本/分镜/图片/视频/素材全部留在本机，用户自配 Agnes API Key 驱动。",
   "main": "server.js",

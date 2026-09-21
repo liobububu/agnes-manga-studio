@@ -155,7 +155,7 @@ try {
     const pages = [
       ['projects', '项目管理'], ['scripts', '故事脚本'], ['storyboards', '分镜制作'],
       ['images', '图片生成'], ['videos', '视频生成'], ['tasks', '镜头任务'],
-      ['assets', '素材库'], ['settings', '设置'],
+      ['assets', '素材库'], ['editor', '剪辑台'], ['settings', '设置'],
     ];
     for (const [id, title] of pages) {
       await cdp.eval(`location.hash = '#/${id}'`);
@@ -226,6 +226,53 @@ try {
     ok('2.5 显示画幅档位', await cdp.eval(`!!document.querySelector('#f-ar25')`));
     // 音频模式在 2.5 下要保留音频输入，不能被参数区重绘冲掉
     ok('2.5 下音频输入仍在', await cdp.eval(`!!document.querySelector('[data-au]')`));
+
+    group('剪辑台');
+    await cdp.eval(`location.hash = '#/editor'`);
+    await waitFor(() => cdp.eval(`document.querySelector('.page-title')?.textContent === '剪辑台'`), '剪辑台');
+    ok('剪辑台标题存在', await cdp.eval(`document.querySelector('.page-title')?.textContent === '剪辑台'`));
+    ok('有按分镜汇总按钮', await cdp.eval(`!!document.querySelector('#assemble')`));
+    ok('有保存与导出按钮', await cdp.eval(`!!document.querySelector('#save') && !!document.querySelector('#export')`));
+
+    // 未选项目时应给出引导而不是白屏
+    await cdp.eval(`(() => { document.querySelector('#assemble')?.click(); return true; })()`);
+    await new Promise((r) => setTimeout(r, 400));
+    ok('点汇总不抛错', ((await cdp.eval(`(window.__uiErrors||[]).length`)) === 0));
+
+    // 先造数据：验收项目里本来没有片段，不造的话这条断言永远量不到东西。
+    // 用接口直接建方案（不需要 API Key），再回页面看它是否被画出来。
+    const projRes = await fetch(`http://127.0.0.1:${port}/api/projects`);
+    const projList = await projRes.json();
+    const proj = projList.find((p) => p.name === '浏览器验收剧') || projList[0];
+    const planRes = await fetch(`http://127.0.0.1:${port}/api/edit-plans`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        project_id: proj.id, episode_number: 1, name: '验收方案',
+        clips: [
+          { shot_number: 1, name: '镜头一', duration: 4, trim_in: 0, trim_out: 4, enabled: true },
+          { shot_number: 2, name: '镜头二', duration: 6, trim_in: 1, trim_out: 5, enabled: true },
+        ],
+        transitions: [{ after_clip_index: 0, type: 'crossfade', duration: 0.5 }],
+      }),
+    });
+    const planJson = await planRes.json();
+    ok('接口建剪辑方案成功', planRes.status === 200 && !!planJson.id, JSON.stringify(planJson).slice(0, 160));
+
+    await cdp.eval(`(() => {
+      const sel = document.querySelector('#p-picker');
+      const target = ${JSON.stringify(proj.id)};
+      const opt = Array.from(sel.options).find((o) => o.value === target) || Array.from(sel.options).find((o) => o.value && o.value !== '__all__');
+      if (!opt) return false;
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    await waitFor(() => cdp.eval(`document.querySelectorAll('[data-tr]').length > 0`), '片段行出现');
+    const clipCount = await cdp.eval(`document.querySelectorAll('[data-tr]').length`);
+    ok('画出片段行（含转场下拉）', clipCount === 2, `片段 ${clipCount} 行`);
+    ok('显示总时长', /总时长/.test(await cdp.eval(`document.querySelector('#timeline')?.textContent || ''`)));
+    ok('转场选中了交叉淡化', await cdp.eval(`document.querySelector('[data-tr="0"]')?.value === 'crossfade'`));
 
     group('每个模式点提交都不崩');
     // 关键帧模式的 mode id 是 'keyframe' 而状态键是 'kf'，

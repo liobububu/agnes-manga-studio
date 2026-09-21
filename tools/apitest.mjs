@@ -826,6 +826,97 @@ group('2.5 素材上限');
   eq('2.0 不受 2.5 限制影响', old.status, 200);
 }
 
+// ── 11h. 剪辑台 ──────────────────────────────────────────────
+group('剪辑台');
+{
+  // 1) 自动汇总：以分镜为准排队，没生成视频的镜头要标出来
+  const ep = 7;
+  const sbRes = await api('POST', '/api/storyboards', {
+    rows: [1, 2, 3].map((n) => ({
+      project_id: PROJECT_ID, episode_number: ep, shot_number: n,
+      shot_type: '特写', image_prompt: `shot ${n}`, sort_order: n, duration_seconds: 4,
+    })),
+  });
+  eq('建 3 条分镜', sbRes.data.inserted, 3);
+  const shots = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${ep}`)).data;
+  eq('分镜可读回', shots.length, 3);
+
+  // 只给前两条镜头造视频，第三条故意留空
+  for (const s of shots.slice(0, 2)) {
+    await api('POST', '/api/videos', {
+      project_id: PROJECT_ID, storyboard_id: s.id, prompt: `clip ${s.shot_number}`,
+      mode: 'text_to_video',
+    });
+    // mock 第一次查排队、第二次完成，所以刷新两次把状态推到 completed
+    const list = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+    const v = list.find((x) => x.storyboard_id === s.id);
+    if (v && v.agnes_video_id) {
+      await api('POST', `/api/videos/${v.id}/refresh`, {});
+      await api('POST', `/api/videos/${v.id}/refresh`, {});
+    }
+  }
+
+  const asm = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${ep}`);
+  eq('汇总 200', asm.status, 200);
+  eq('按分镜顺序给出 3 个片段', asm.data.clips.length, 3);
+  eq('片段顺序是镜头号', asm.data.clips.map((c) => c.shot_number).join(','), '1,2,3');
+  eq('统计到 2 个就绪', asm.data.stats.ready, 2);
+  eq('统计到 1 个缺失', asm.data.stats.missing, 1);
+  ok('缺失的片段被标记', asm.data.clips[2].missing === true && asm.data.clips[2].enabled === false);
+  eq('时长取自分镜', asm.data.clips[0].duration, 4);
+
+  const noProject = await api('GET', '/api/edit-plans/assemble');
+  eq('缺项目参数 400', noProject.status, 400);
+
+  // 2) 存方案
+  const planRes = await api('POST', '/api/edit-plans', {
+    project_id: PROJECT_ID, episode_number: ep, name: '第 7 集成片',
+    clips: [
+      { shot_number: 1, name: '镜头一', duration: 4, trim_in: 0, trim_out: 4, enabled: true },
+      { shot_number: 2, name: '镜头二', duration: 6, trim_in: 1, trim_out: 4, enabled: true },
+      { shot_number: 3, name: '不要这条', duration: 5, enabled: false },
+    ],
+    transitions: [{ after_clip_index: 0, type: 'crossfade', duration: 0.5 }],
+  });
+  eq('建方案 200', planRes.status, 200);
+  const planId = planRes.data.id;
+
+  const noPid = await api('POST', '/api/edit-plans', { episode_number: 1 });
+  eq('缺项目 400', noPid.status, 400);
+
+  // 3) 导出：总时长 = 各片段 (out - in) 之和，禁用/缺失的不算
+  const ex = await api('GET', `/api/edit-plans/${planId}/export`);
+  eq('导出 200', ex.status, 200);
+  eq('总时长 = 4 + 3', ex.data.total_duration, 7);
+  eq('只导出启用的 2 条', ex.data.clips.length, 2);
+  eq('第二条起点接在第一条后面', ex.data.clips[1].start, 4);
+  eq('第二条时长扣掉入点', ex.data.clips[1].duration, 3);
+  eq('转场透传', ex.data.transitions[0].type, 'crossfade');
+  ok('ffmpeg 清单有 2 行', ex.data.ffmpeg_concat.split('\n').length === 2, ex.data.ffmpeg_concat);
+  eq('OpenReel 清单按镜头号排序', ex.data.openreel.order.join(','), '1,2');
+
+  // 4) 非法入出点要被夹回，不能算出负时长
+  const bad = await api('POST', '/api/edit-plans', {
+    project_id: PROJECT_ID, episode_number: ep,
+    clips: [{ shot_number: 1, duration: 5, trim_in: 9, trim_out: 2 }],
+  });
+  eq('入点大于出点被回退', bad.data.clips[0].trim_in, 0);
+  eq('出点回退到整段', bad.data.clips[0].trim_out, 5);
+
+  // 5) 空方案导出要明确报错，而不是给个空清单
+  const empty = await api('POST', '/api/edit-plans', {
+    project_id: PROJECT_ID, episode_number: ep, clips: [],
+  });
+  const emptyEx = await api('GET', `/api/edit-plans/${empty.data.id}/export`);
+  eq('空方案导出 400', emptyEx.status, 400);
+
+  // 6) 删掉
+  const del = await api('DELETE', `/api/edit-plans/${planId}`);
+  eq('删方案 200', del.status, 200);
+  const gone = await api('GET', `/api/edit-plans/${planId}/export`);
+  eq('删后导出 404', gone.status, 404);
+}
+
 // ── 12. 导入导出 ─────────────────────────────────────────────
 group('导入导出');
 {
@@ -931,6 +1022,11 @@ group('级联删除');
   ok('级联删掉了关联数据', d.removed >= 4, `删了 ${d.removed} 条`);
   const left = await api('GET', `/api/storyboards?project_id=${PROJECT_ID}`);
   eq('分镜已清空', left.data.length, 0);
+
+  // 级联必须连剪辑方案一起删：之前集合名是写死的，加 edit_plans 没同步，
+  // 删了项目却留下孤儿方案
+  const orphans = await api('GET', `/api/edit-plans?project_id=${PROJECT_ID}`);
+  eq('剪辑方案也被清空', orphans.data.length, 0);
 }
 
 // ── 17. 素材 Range 请求 ──────────────────────────────────────

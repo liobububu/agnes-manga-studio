@@ -14,6 +14,7 @@ import videos from './pages/videos.js';
 import tasks from './pages/tasks.js';
 import assets from './pages/assets.js';
 import settings from './pages/settings.js';
+import editor from './pages/editor.js';
 
 const NAV = [
   { id: 'dashboard', label: '工作台', icon: 'dashboard', page: dashboard },
@@ -24,6 +25,7 @@ const NAV = [
   { id: 'videos', label: '视频生成', icon: 'video', page: videos },
   { id: 'tasks', label: '镜头任务', icon: 'tasks', page: tasks },
   { id: 'assets', label: '素材库', icon: 'grid', page: assets },
+  { id: 'editor', label: '剪辑台', icon: 'grip', page: editor },
   { id: 'settings', label: '设置', icon: 'settings', page: settings },
 ];
 

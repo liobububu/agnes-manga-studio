@@ -19,13 +19,13 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.1.6';
-/** 改动前端后递增，exe 会在下次启动重新释放页面 */
-const ASSETS_VERSION = VERSION;
+const VERSION = '1.2.1';
+// 资源释放的版本戳用内嵌文件内容哈希（见 materializeAssets），不再依赖版本号。
 
 // ─────────────────────────────────────────────────────────────
 // 单文件 exe（Node SEA）支持
@@ -54,23 +54,42 @@ const APP_HOME = IS_SEA ? resolveHome() : (process.env.AGNES_STUDIO_HOME
   ? path.resolve(process.env.AGNES_STUDIO_HOME)
   : path.join(CODE_HOME, 'data'));
 
-/** 把内嵌资源释放到可写目录（仅 exe 形态需要） */
+/**
+ * 把内嵌资源释放到可写目录（仅 exe 形态需要）。
+ *
+ * 版本戳必须用**内容哈希**而不是版本号：
+ * 版本号不变但代码改了的话（同版本重打包），戳相同 → 不重新释放 →
+ * 用户一直在跑旧的那份 lib/*.js / public/*，改的东西根本没生效，
+ * 而且现象极其迷惑：exe 里明明有新代码，跑起来却是旧行为。
+ */
 function materializeAssets() {
   if (!IS_SEA) return;
   const stampFile = path.join(APP_HOME, '.assets-version');
   let stamp = '';
   try { stamp = fs.readFileSync(stampFile, 'utf8'); } catch { /* 首次运行 */ }
-  if (stamp === ASSETS_VERSION) return;
 
-  fs.mkdirSync(APP_HOME, { recursive: true });
+  const files = [];
   for (const key of sea.getAssetKeys()) {
     if (!key.startsWith('public/') && !key.startsWith('lib/')) continue;
+    files.push([key, Buffer.from(sea.getAsset(key))]);
+  }
+
+  const hash = crypto.createHash('sha256');
+  for (const [key, buf] of files.sort((a, b) => a[0].localeCompare(b[0]))) {
+    hash.update(key);
+    hash.update(String(buf.length));
+    hash.update(buf);
+  }
+  const nextStamp = `sha256:${hash.digest('hex')}`;
+  if (stamp === nextStamp) return;
+
+  fs.mkdirSync(APP_HOME, { recursive: true });
+  for (const [key, buf] of files) {
     const dest = path.join(APP_HOME, key);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    // sea.getAsset() 返回 ArrayBuffer，writeFileSync 只收 Buffer / TypedArray
-    fs.writeFileSync(dest, Buffer.from(sea.getAsset(key)));
+    fs.writeFileSync(dest, buf);
   }
-  fs.writeFileSync(stampFile, ASSETS_VERSION, 'utf8');
+  fs.writeFileSync(stampFile, nextStamp, 'utf8');
 }
 
 if (IS_SEA) {

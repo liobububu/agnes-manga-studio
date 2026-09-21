@@ -109,8 +109,19 @@ group('导入导出');
   eq('项目导出带剧本', dump.scripts.length, 1);
   ok('导出带时间戳', !!dump.exported_at);
 
+  // 级联删除必须覆盖「所有带 project_id 的集合」。
+  // 之前是把集合名写死成一个数组，加了 edit_plans 没同步，
+  // 结果删了项目却留下一堆孤儿剪辑方案。
+  store.insert('edit_plans', { project_id: a.id, episode_number: 1, clips: [] });
+  const dump2 = store.exportProject(a.id);
+  ok('项目导出带剪辑方案', Array.isArray(dump2.edit_plans) && dump2.edit_plans.length === 1,
+    JSON.stringify(dump2.edit_plans || []).slice(0, 120));
+
   const all = store.exportAll();
-  ok('全量导出含 8 张表', Object.keys(all.collections).length === 8, Object.keys(all.collections).join(','));
+  // 别写死数量：加一张新表就该跟着变，写死的话每次加表都要来改断言
+  eq('全量导出覆盖所有集合', Object.keys(all.collections).length, store.COLLECTIONS.length);
+  ok('每张表都在导出里', store.COLLECTIONS.every((c) => Array.isArray(all.collections[c])),
+    store.COLLECTIONS.filter((c) => !Array.isArray(all.collections[c])).join(','));
 
   // 改 id 后合并导入 → 应新增
   const copy = JSON.parse(JSON.stringify(all.collections));

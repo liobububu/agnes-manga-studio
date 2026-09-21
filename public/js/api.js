@@ -86,6 +86,13 @@ export const api = {
   updateTemplate: (id, t) => req('PUT', `/api/templates/${id}`, t),
   deleteTemplate: (id) => req('DELETE', `/api/templates/${id}`),
 
+  editPlans: (projectId, episode) => req('GET', `/api/edit-plans?project_id=${encodeURIComponent(projectId || '')}${episode ? `&episode=${episode}` : ''}`),
+  assembleEditPlan: (projectId, episode) => req('GET', `/api/edit-plans/assemble?project_id=${encodeURIComponent(projectId)}&episode=${episode}`),
+  createEditPlan: (p) => req('POST', '/api/edit-plans', p),
+  updateEditPlan: (id, p) => req('PUT', `/api/edit-plans/${id}`, p),
+  deleteEditPlan: (id) => req('DELETE', `/api/edit-plans/${id}`),
+  exportEditPlan: (id) => req('GET', `/api/edit-plans/${id}/export`),
+
   genText: (p) => req('POST', '/api/agnes/text', p),
 
   batchImages: (p) => req('POST', '/api/batch/images', p),
