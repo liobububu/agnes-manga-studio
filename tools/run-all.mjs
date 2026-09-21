@@ -4,7 +4,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
-const tests = ['selftest.mjs', 'apitest.mjs', 'uitest.mjs', 'browser-test.mjs'];
+// exe-test 放最后：它跑的是 dist 里的打包产物，必须等前面四层都过才有意义。
+// 没有 exe 时它自己会跳过（不算失败）。
+const tests = ['selftest.mjs', 'apitest.mjs', 'uitest.mjs', 'browser-test.mjs', 'exe-test.mjs'];
 const node = process.execPath;
 let failed = 0;
 for (const file of tests) {
