@@ -417,6 +417,39 @@ group('刷新与补录');
   await api('DELETE', `/api/videos/${id2}`);
 }
 
+// ── 9b. 完成后的副作用：不管走自动轮询还是手动刷新都要触发 ────
+// 这里的 bug 是真实存在的：回填分镜 / 自动保存原本只写在轮询循环里，
+// 用户在「镜头任务」点一下刷新查到完成，分镜状态还停在「有图片」。
+group('完成后的副作用');
+{
+  // 自动下载打开，验证手动刷新也会落盘
+  await api('PUT', '/api/settings', { auto_download_video: '1' });
+
+  const sb = await api('POST', '/api/storyboards', {
+    rows: [{ project_id: PROJECT_ID, episode_number: 9, shot_number: 1, shot_type: '特写', image_prompt: 'sb side effect', sort_order: 0 }],
+  });
+  const sbId = sb.data.rows ? sb.data.rows[0].id : (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=9`)).data[0].id;
+
+  const v = await api('POST', '/api/videos', { prompt: 'side effect test', project_id: PROJECT_ID, storyboard_id: sbId });
+  const vid = v.data.asset.id;
+
+  // mock 第 1 次查返回 queued，第 2 次 completed —— 所以刷新两次
+  await api('POST', `/api/videos/${vid}/refresh`, {});
+  const fresh = await api('POST', `/api/videos/${vid}/refresh`, {});
+  eq('手动刷新查到完成', fresh.data.asset.status, 'completed');
+
+  const sbAfter = await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=9`);
+  const row = sbAfter.data.find((s) => s.id === sbId);
+  eq('手动刷新也回填分镜状态', row.status, 'video_ready');
+  eq('分镜关联到视频', row.linked_video_id, vid);
+
+  ok('手动刷新也自动保存视频', !!fresh.data.asset.local_file, JSON.stringify(fresh.data.asset.local_file || ''));
+
+  await api('PUT', '/api/settings', { auto_download_video: '0' });
+  await api('DELETE', `/api/videos/${vid}`);
+  await api('DELETE', `/api/storyboards/${sbId}`);
+}
+
 // ── 10. 模板 ─────────────────────────────────────────────────
 group('提示词模板');
 {

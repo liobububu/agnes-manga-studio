@@ -91,6 +91,19 @@ export default async function storyboards(container, params) {
     }
   });
 
+  // 视频在后台跑完时，服务端会把这一镜回填成「视频就绪」。
+  // 不订阅的话用户盯着分镜表看，状态却一直停在「有图片」，只能手动刷新。
+  const offStoryboard = onEvent('storyboard', (sb) => {
+    if (!sb || !sb.id) return;
+    const i = rows.findIndex((r) => r.id === sb.id);
+    if (i < 0) return;                       // 不是当前这一集的镜头
+    if (rows[i].status === sb.status) return; // 没变化就别重绘
+    rows[i] = Object.assign({}, rows[i], sb);
+    // 正在编辑镜头时重绘会把输入顶掉
+    if (container.querySelector('.modal')) return;
+    renderTable();
+  });
+
   async function load() {
     const el = container.querySelector('#table');
     if (!projectId) {
@@ -456,5 +469,5 @@ ${text}`,
   }
 
   await load();
-  return () => offBatch && offBatch();
+  return () => { offBatch && offBatch(); offStoryboard && offStoryboard(); };
 }

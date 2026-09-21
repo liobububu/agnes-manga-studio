@@ -279,6 +279,31 @@ group('前端工具函数');
   ok('未知类型模型不被丢弃', text.some((m) => m.value === 'mystery-model'), JSON.stringify(text));
 }
 
+// ── SSE 事件：后端 emit 的，前端必须订阅 ────────────────────
+// 踩过的坑：后端加了 storyboard 事件并回填了分镜状态，
+// 前端压根没 addEventListener，功能等于不存在，而且测试全绿看不出来。
+group('SSE 事件两端一致');
+{
+  const libDir = path.join(ROOT, 'lib');
+  const emitted = new Set();
+  for (const f of fs.readdirSync(libDir).filter((n) => n.endsWith('.js'))) {
+    for (const m of read(path.join(libDir, f)).matchAll(/events\.emit\(\s*'([a-z_]+)'/g)) emitted.add(m[1]);
+  }
+  ok('后端确实在推事件', emitted.size > 0, [...emitted].join(','));
+
+  const app = read(path.join(PUB, 'js', 'app.js'));
+  for (const kind of emitted) {
+    ok(`前端订阅了 ${kind}`, app.includes(`addEventListener('${kind}'`), `app.js 里没有 es.addEventListener('${kind}'`);
+    ok(`${kind} 在 listeners 表里`, new RegExp(`listeners\\s*=\\s*\\{[\\s\\S]*?${kind}\\s*:`).test(app));
+  }
+  // 反向：前端订阅了但后端没人推，说明是死代码
+  // 只认 es.（SSE 连接）上的监听，别把 window.addEventListener('hashchange') 算进来
+  const subscribed = [...app.matchAll(/\bes\.addEventListener\(\s*'([a-z_]+)'/g)].map((m) => m[1]);
+  for (const kind of subscribed) {
+    ok(`后端确实推 ${kind}`, emitted.has(kind), `前端听了 ${kind}，但 lib/ 里没人 emit`);
+  }
+}
+
 console.log(`\n${'═'.repeat(52)}`);
 console.log(`  前端检查：${pass} 通过 / ${fail} 失败`);
 if (failures.length) {

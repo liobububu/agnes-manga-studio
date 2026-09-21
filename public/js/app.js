@@ -129,29 +129,33 @@ export async function softRefresh() {
 }
 
 // ── SSE：视频状态与批量任务进度 ─────────────────────────────
-const listeners = { video: [], batch: [] };
+// 后端会推 4 类事件：video / batch / storyboard / log
+// 少注册一个，对应的实时更新就成了死代码——加事件时两边要一起改
+const listeners = { video: [], batch: [], storyboard: [], log: [] };
 export function onEvent(kind, fn) {
+  if (!listeners[kind]) listeners[kind] = [];
   listeners[kind].push(fn);
-  return () => { listeners[kind] = listeners[kind].filter((f) => f !== fn); };
+  return () => { listeners[kind] = (listeners[kind] || []).filter((f) => f !== fn); };
+}
+
+function fire(kind, raw) {
+  let d = null;
+  try { d = JSON.parse(raw); } catch { return; }
+  (listeners[kind] || []).forEach((f) => { try { f(d); } catch { /* ignore */ } });
+  return d;
 }
 
 function connectSSE() {
   try {
     const es = new EventSource('/api/events');
     es.addEventListener('video', (e) => {
-      let d = null;
-      try { d = JSON.parse(e.data); } catch { return; }
-      listeners.video.forEach((f) => { try { f(d); } catch { /* ignore */ } });
-      if (state.current === 'tasks' || state.current === 'dashboard') {
-        // 任务页自己会处理增量；工作台只需更新角标
-        if (state.current === 'dashboard') refreshState();
-      }
+      fire('video', e.data);
+      if (state.current === 'dashboard') refreshState();
     });
-    es.addEventListener('batch', (e) => {
-      let d = null;
-      try { d = JSON.parse(e.data); } catch { return; }
-      listeners.batch.forEach((f) => { try { f(d); } catch { /* ignore */ } });
-    });
+    es.addEventListener('batch', (e) => { fire('batch', e.data); });
+    // 视频完成后分镜被回填成「视频就绪」，分镜页要跟着变，否则用户得手动刷新
+    es.addEventListener('storyboard', (e) => { fire('storyboard', e.data); });
+    es.addEventListener('log', (e) => { fire('log', e.data); });
     es.onerror = () => { /* 断线由浏览器自动重连 */ };
   } catch { /* SSE 不可用时静默降级为手动刷新 */ }
 }
