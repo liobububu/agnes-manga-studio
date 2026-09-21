@@ -227,6 +227,43 @@ try {
     // 音频模式在 2.5 下要保留音频输入，不能被参数区重绘冲掉
     ok('2.5 下音频输入仍在', await cdp.eval(`!!document.querySelector('[data-au]')`));
 
+    group('每个模式点提交都不崩');
+    // 关键帧模式的 mode id 是 'keyframe' 而状态键是 'kf'，
+    // 直接用 mode 取状态会拿到 undefined → 提交时 TypeError。
+    // 这里逐个模式真点一次提交按钮，把这类崩溃锁住。
+    // ⚠️ 光设 .value 不会触发 oninput，状态根本没更新 ——
+    //    那样跑的是「校验失败提前 return」，压根走不到真正会崩的代码。
+    //    必须补发 input 事件。未处理的 Promise 拒绝落在 __uiRejects，两边都要看。
+    // cdp.eval 遇到含分号的表达式会整体包进 IIFE，所以这里必须自己写 return，
+    // 否则拿到的永远是 undefined。
+    const setVal = (sel, v) => `return (() => {
+      const el = document.querySelector(${JSON.stringify(sel)});
+      if (!el) return false;
+      el.value = ${JSON.stringify(v)};
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`;
+
+    for (const [m, fills] of [
+      ['t2v', [['#f-prompt', 'a cat']]],
+      ['i2v', [['#f-image', 'https://x/1.png'], ['#f-prompt', 'move']]],
+      ['keyframe', [['#kf-start', 'https://x/a.png'], ['#kf-end', 'https://x/b.png']]],
+      ['audio', [['[data-au]', 'https://x/1.mp3']]],
+    ]) {
+      await cdp.eval(`location.hash = '#/videos'`);
+      await waitFor(() => cdp.eval(`!!document.querySelector('#mode [data-mode="${m}"]')`), `模式 ${m}`);
+      await cdp.eval(`(() => { document.querySelector('#mode [data-mode="${m}"]').click(); return true; })()`);
+      await waitFor(() => cdp.eval(`!!document.querySelector('#submit')`), `${m} 提交按钮`);
+      for (const [sel, val] of fills) {
+        ok(`${m} 能填 ${sel}`, await cdp.eval(setVal(sel, val)));
+      }
+      await cdp.eval(`(() => { document.querySelector('#submit').click(); return true; })()`);
+      await new Promise((r) => setTimeout(r, 600));
+      const got = await cdp.eval(`({errors: window.__uiErrors || [], rejects: window.__uiRejects || []})`);
+      const all = [...got.errors, ...got.rejects].filter((e) => !/Agnes API Key|未配置|请先在/.test(e));
+      ok(`${m} 模式提交不抛 TypeError`, !all.some((e) => /TypeError|undefined/.test(e)), JSON.stringify(all));
+    }
+
     const collected = await cdp.eval(`({errors:window.__uiErrors || [], rejects:window.__uiRejects || []})`);
     ok('无 window error', collected?.errors?.length === 0, JSON.stringify(collected?.errors || []));
     ok('无未处理 Promise 拒绝', collected?.rejects?.length === 0, JSON.stringify(collected?.rejects || []));

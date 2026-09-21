@@ -199,6 +199,71 @@ group('Agnes 工具');
   eq('模型缓存错误可读', store.getModels().error, '暂时失败');
 }
 
+// ── 4b. 视频请求体构造（纯函数，不发网络请求） ────────────────
+// 2.5 和 2.0 的契约不同，这里逐字段锁住——靠真提交才发现 400 就太晚了。
+group('视频请求体');
+{
+  const b25 = agnes.buildVideoBody({
+    prompt: 'p', model: 'agnes-video-2.5', mode_25: 'text', duration_seconds: 8,
+    size_25: '1080P', aspect_ratio: '9:16', seed: '7',
+  }, 'agnes-video-2.5');
+  eq('2.5 带 mode', b25.mode, 'text');
+  eq('2.5 时长是字符串', b25.seconds, '8');
+  eq('2.5 带 size', b25.size, '1080P');
+  eq('2.5 带画幅', b25.aspect_ratio, '9:16');
+  eq('2.5 seed 转数字', b25.seed, 7);
+  for (const banned of ['num_frames', 'width', 'height', 'frame_rate']) {
+    ok(`2.5 不含 ${banned}`, !(banned in b25), JSON.stringify(b25));
+  }
+
+  const b20 = agnes.buildVideoBody({
+    prompt: 'p', num_frames: 241, width: 1152, height: 768, frame_rate: 24,
+    negative_prompt: 'bad',
+  }, 'agnes-video-v2.0');
+  eq('2.0 带 num_frames', b20.num_frames, 241);
+  eq('2.0 带 width', b20.width, 1152);
+  eq('2.0 带 negative_prompt', b20.negative_prompt, 'bad');
+  ok('2.0 不带 seconds', !('seconds' in b20));
+  ok('2.0 不带 mode_25 字段', !('mode' in b20));
+
+  // 图生视频：2.5 用 images[]，2.0 用 image
+  const i25 = agnes.buildVideoBody({ prompt: 'p', image: 'https://i/1.png', mode_25: 'reference' }, 'agnes-video-2.5');
+  eq('2.5 图片进 images 数组', JSON.stringify(i25.images), JSON.stringify(['https://i/1.png']));
+  const i20 = agnes.buildVideoBody({ prompt: 'p', image: 'https://i/1.png' }, 'agnes-video-v2.0');
+  eq('2.0 图片仍是 image 字段', i20.image, 'https://i/1.png');
+
+  // 首尾帧：2.5 拆成 first_frame / last_frame
+  const kf25 = agnes.buildVideoBody({
+    prompt: 'p', mode_25: 'keyframe',
+    source_images: [{ url: 'https://a.png' }, { url: 'https://b.png' }, { url: 'https://c.png' }],
+  }, 'agnes-video-2.5');
+  eq('2.5 首帧', kf25.first_frame, 'https://a.png');
+  eq('2.5 尾帧', kf25.last_frame, 'https://b.png');
+  eq('2.5 多余的图进 images', JSON.stringify(kf25.images), JSON.stringify(['https://c.png']));
+
+  // 音频：自动把 mode 从 text 提到 reference，否则 Agnes 会拒
+  const a25 = agnes.buildVideoBody({ prompt: 'p', mode_25: 'text', audios: ['https://x/1.mp3'] }, 'agnes-video-2.5');
+  eq('有音频时 mode 提到 reference', a25.mode, 'reference');
+  eq('音频透传', JSON.stringify(a25.audios), JSON.stringify(['https://x/1.mp3']));
+  const many = agnes.buildVideoBody({
+    prompt: 'p', mode_25: 'reference',
+    audios: ['1', '2', '3', '4', '5'],
+  }, 'agnes-video-2.5');
+  eq('音频最多保留 3 段', many.audios.length, 3);
+
+  // 时长夹取（4~12）
+  eq('短时长夹到 4', agnes.buildVideoBody({ prompt: 'p', duration_seconds: 1 }, 'agnes-video-2.5').seconds, '4');
+  eq('长时长夹到 12', agnes.buildVideoBody({ prompt: 'p', duration_seconds: 99 }, 'agnes-video-2.5').seconds, '12');
+
+  // 高级参数不能顶掉核心字段
+  const ex = agnes.buildVideoBody({
+    prompt: 'real', model: 'agnes-video-2.5', extra_params: { prompt: 'hack', model: 'hack', foo: 1 },
+  }, 'agnes-video-2.5');
+  eq('高级参数不覆盖 prompt', ex.prompt, 'real');
+  eq('高级参数不覆盖 model', ex.model, 'agnes-video-2.5');
+  eq('高级参数新字段透传', ex.foo, 1);
+}
+
 // ── 5b. 图床（本地图片 → 公网地址，图生视频的关键链路） ──────
 group('图床');
 {

@@ -200,9 +200,20 @@ export default async function videos(container, params) {
     if (extra) extra.oninput = () => { s.extra = extra.value; };
   }
 
+  /**
+   * 界面 mode id → 状态键。两个名字不一样（keyframe / kf），
+   * 直接用 mode 取 S 会拿到 undefined，一提交就抛 TypeError。
+   * 所有按 mode 取状态的地方都必须过这个函数。
+   */
+  function stateKey(m) {
+    return m === 'keyframe' ? 'kf' : m;
+  }
+
   /** 解析高级参数；不是合法 JSON 就拦下来，别把坏参数发给 Agnes */
-  function readExtraParams(key) {
-    const raw = String(S[key].extra || '').trim();
+  function readExtraParams(m) {
+    const s = S[stateKey(m)];
+    if (!s) return undefined;
+    const raw = String(s.extra || '').trim();
     if (!raw) return undefined;
     let parsed = null;
     try { parsed = JSON.parse(raw); } catch {
@@ -436,8 +447,7 @@ export default async function videos(container, params) {
 
     // Video 2.5 的参数：这一套字段和服务端 agnes.js 的分流逻辑对应
     if (isVideo25(model) && mode !== 'audio') {
-      const key = mode === 'keyframe' ? 'kf' : mode;   // 界面 mode id 与状态键不完全同名
-      const s = S[key];
+      const s = S[stateKey(mode)];
       payload.mode_25 = mode === 't2v' ? 'text' : mode === 'keyframe' ? 'keyframe' : 'reference';
       payload.duration_seconds = s.seconds
         || Math.round((DURATION_PRESETS[s.frames || 1].frames - 1) / 24) || 5;
