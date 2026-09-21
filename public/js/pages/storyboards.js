@@ -8,7 +8,7 @@ import {
 } from '../consts.js';
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm, options } from '../ui.js';
-import { head, projectPicker, renderBatchBar } from './helpers.js';
+import { head, projectPicker, renderBatchBar, episodeOptions } from './helpers.js';
 import { state, onEvent } from '../app.js';
 
 export default async function storyboards(container, params) {
@@ -59,8 +59,7 @@ export default async function storyboards(container, params) {
 
   const picker = container.querySelector('#p-picker');
   const epSel = container.querySelector('#ep');
-  epSel.innerHTML = Array.from({ length: 30 }, (_, i) => i + 1)
-    .map((n) => `<option value="${n}"${n === episode ? ' selected' : ''}>第 ${n} 集</option>`).join('');
+  epSel.innerHTML = episodeOptions(episode);
   picker.onchange = () => { projectId = picker.value; selected.clear(); load(); };
   epSel.onchange = () => { episode = Number(epSel.value); selected.clear(); load(); };
   container.querySelector('#reload').onclick = () => load();

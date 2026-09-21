@@ -171,6 +171,28 @@ group('API 方法');
   }
   ok('没有丢弃返回值的接口调用', discarded.length === 0, discarded.join(' | '));
 
+  // helpers.js 同理：导出必须有人用。
+  // 之前里面躺着一个 projectStatLine——名字叫「项目统计」，
+  // 实现却只是 relTime(id)，没人调用但留在那儿迟早坑人。
+  const helpersPath = path.join(PUB, 'js', 'pages', 'helpers.js');
+  const helpersSrc = read(helpersPath);
+  const helpersExports = [...helpersSrc.matchAll(/export (?:async )?function ([a-zA-Z][\w]*)/g)].map((m) => m[1]);
+  ok('helpers 有导出', helpersExports.length > 3, helpersExports.join(','));
+
+  const pageSrcs = [...listJs(path.join(PUB, 'js', 'pages')), path.join(PUB, 'js', 'app.js')]
+    .filter((f) => f !== helpersPath)
+    .map(read).join('\n');
+  const unusedHelpers = helpersExports.filter((n) => !new RegExp(`\\b${n}\\b`).test(pageSrcs));
+  ok('helpers 里没有没人用的导出', unusedHelpers.length === 0, unusedHelpers.join(','));
+
+  // 集数下拉抽成公共函数后，两个页面都该用它，别再各写一份
+  ok('集数选项有公共实现', /export function episodeOptions/.test(helpersSrc));
+  for (const f of ['storyboards.js', 'editor.js']) {
+    const src = read(path.join(PUB, 'js', 'pages', f));
+    ok(`${f} 用公共集数选项`, /episodeOptions\(/.test(src) && !/length: 30/.test(src),
+      '仍在自己拼 30 集');
+  }
+
   // 反向：定义了却没人用的方法就是死代码。
   // 之前攒了 6 个（models / updateScript / createImage / createTask / batch / logs），
   // 光查「用了的是否有定义」永远发现不了。

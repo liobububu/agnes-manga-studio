@@ -10,7 +10,7 @@
 import { icon, esc } from '../consts.js';
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm } from '../ui.js';
-import { head, projectPicker } from './helpers.js';
+import { head, projectPicker, episodeOptions } from './helpers.js';
 import { state } from '../app.js';
 
 const TRANSITIONS = [
@@ -46,8 +46,7 @@ export default async function editor(container, params) {
     <div id="plans"></div>`;
 
   const epSel = container.querySelector('#ep');
-  epSel.innerHTML = Array.from({ length: 30 }, (_, i) => i + 1)
-    .map((n) => `<option value="${n}"${n === episode ? ' selected' : ''}>第 ${n} 集</option>`).join('');
+  epSel.innerHTML = episodeOptions(episode);
 
   container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value; planId = ''; load(); };
   epSel.onchange = () => { episode = Number(epSel.value); planId = ''; load(); };

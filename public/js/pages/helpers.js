@@ -1,7 +1,7 @@
 /**
  * helpers.js — 页面通用片段：页头、项目选择器、批量进度条
  */
-import { icon, esc, relTime } from '../consts.js';
+import { icon, esc } from '../consts.js';
 
 export function head(o) {
   return `
@@ -27,10 +27,6 @@ export function projectPicker(projects, selected, opts = {}) {
 }
 
 /** 批量任务进度（SSE 驱动） */
-export function batchBar() {
-  return `<div id="batch-bar"></div>`;
-}
-
 export function renderBatchBar(el, job, onCancel) {
   if (!el) return;
   if (!job) { el.innerHTML = ''; return; }
@@ -60,25 +56,13 @@ export function renderBatchBar(el, job, onCancel) {
   if (btn) btn.onclick = () => onCancel(job.id);
 }
 
-/** 卡片里的项目统计（分镜/图片/视频数） */
-export async function projectStatLine(id) {
-  return `<span>${relTime(id)}</span>`;
-}
-
-export function selectField(label, id, optionsHtml, extra = '') {
-  return `<div class="field"><label>${esc(label)}</label><select class="select" id="${id}" ${extra}>${optionsHtml}</select></div>`;
-}
-
-export function inputField(label, id, value = '', placeholder = '', type = 'text', cls = '') {
-  return `<div class="field">
-    <label>${esc(label)}</label>
-    <input class="input ${cls}" id="${id}" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" />
-  </div>`;
-}
-
-export function textareaField(label, id, value = '', placeholder = '', rows = 4, cls = '') {
-  return `<div class="field">
-    <label>${esc(label)}</label>
-    <textarea class="textarea ${cls}" id="${id}" rows="${rows}" placeholder="${esc(placeholder)}">${esc(value)}</textarea>
-  </div>`;
+/**
+ * 集数下拉的 option 列表。分镜页和剪辑台都要用，
+ * 写两份就会出现「一边改了另一边没改」（比如集数上限不一致）。
+ */
+export function episodeOptions(selected, max = 30) {
+  const cur = Number(selected) || 1;
+  return Array.from({ length: max }, (_, i) => i + 1)
+    .map((n) => `<option value="${n}"${n === cur ? ' selected' : ''}>第 ${n} 集</option>`)
+    .join('');
 }
