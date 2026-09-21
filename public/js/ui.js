@@ -123,11 +123,6 @@ export function on(root, selector, type, fn, opts) {
   root.querySelectorAll(selector).forEach((el) => el.addEventListener(type, fn, opts));
 }
 
-/** 从 data-* 属性取值 */
-export function dataOf(el, name) {
-  return el.getAttribute(`data-${name}`);
-}
-
 export function empty(title, desc, iconName = 'inbox') {
   return `<div class="empty">${icon(iconName, 38)}<div class="t">${esc(title)}</div><div class="d">${esc(desc || '')}</div></div>`;
 }

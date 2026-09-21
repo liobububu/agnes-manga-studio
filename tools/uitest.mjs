@@ -185,6 +185,24 @@ group('API 方法');
   const unusedHelpers = helpersExports.filter((n) => !new RegExp(`\\b${n}\\b`).test(pageSrcs));
   ok('helpers 里没有没人用的导出', unusedHelpers.length === 0, unusedHelpers.join(','));
 
+  // ui.js / consts.js 也是放公共导出的地方，同样要查。
+  // 扫出来 5 个零调用：ui 的 dataOf；consts 的 uid / fmtBytes / downloadUrl，
+  // 以及 fmtDate（只被本文件的 relTime 用，该去掉 export 而不是删函数）。
+  for (const mod of ['ui.js', 'consts.js']) {
+    const modPath = path.join(PUB, 'js', mod);
+    const src = read(modPath);
+    const names = [
+      ...[...src.matchAll(/export (?:async )?function ([A-Za-z_]\w*)/g)].map((m) => m[1]),
+      ...[...src.matchAll(/export const ([A-Za-z_]\w*)/g)].map((m) => m[1]),
+    ];
+    const others = [...listJs(path.join(PUB, 'js', 'pages')),
+      path.join(PUB, 'js', 'app.js'), path.join(PUB, 'js', 'api.js')]
+      .filter((f) => f !== modPath).map(read).join('\n')
+      + read(path.join(PUB, 'js', mod === 'ui.js' ? 'consts.js' : 'ui.js'));
+    const dead = names.filter((n) => !new RegExp(`\\b${n}\\b`).test(others));
+    ok(`${mod} 里没有没人用的导出`, dead.length === 0, dead.join(','));
+  }
+
   // 集数下拉抽成公共函数后，两个页面都该用它，别再各写一份
   ok('集数选项有公共实现', /export function episodeOptions/.test(helpersSrc));
   for (const f of ['storyboards.js', 'editor.js']) {

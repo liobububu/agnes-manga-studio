@@ -234,10 +234,6 @@ export function esc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-export function uid(prefix = 'id') {
-  return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-}
-
 export function fmtTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -246,7 +242,7 @@ export function fmtTime(iso) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export function fmtDate(iso) {
+function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
@@ -279,12 +275,6 @@ export function framesForDuration(seconds, fps = 24) {
   return Math.max(9, Math.min(441, frames));
 }
 
-export function fmtBytes(n) {
-  const b = Number(n) || 0;
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / 1024 / 1024).toFixed(1)} MB`;
-}
 
 /** 从模型输出里抠出 JSON（数组或对象），容忍 ```json 包裹和前后废话 */
 export function extractJson(text) {
@@ -341,11 +331,3 @@ export function copyText(text) {
   });
 }
 
-export function downloadUrl(url, filename) {
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename || '';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-}
