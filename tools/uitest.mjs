@@ -277,6 +277,48 @@ group('前端工具函数');
   ok('视频模型含新视频模型', video.some((m) => m.value === 'agnes-video-new'), JSON.stringify(video));
   ok('空目录也能给出回退项', consts.modelChoices({ models: [] }, 'text', ['fallback-1']).length === 1);
   ok('未知类型模型不被丢弃', text.some((m) => m.value === 'mystery-model'), JSON.stringify(text));
+
+  // Video 2.5 判定：模型目录是动态拉的，选中 2.5 时请求体要走另一套。
+  // 前后端各有一份判断，两边不一致就会出现「前端按 2.5 显示、后端按 2.0 发参」。
+  ok('识别 2.5', consts.isVideo25('agnes-video-2.5') === true);
+  ok('识别 v2.5 写法', consts.isVideo25('agnes-video-v2.5') === true);
+  ok('识别 25 连写', consts.isVideo25('agnes-video-25') === true);
+  ok('2.0 不算 2.5', consts.isVideo25('agnes-video-v2.0') === false);
+  ok('空值安全', consts.isVideo25('') === false && consts.isVideo25(undefined) === false);
+
+  ok('时长是字符串', typeof consts.secondsFor25(8) === 'string' && consts.secondsFor25(8) === '8');
+  ok('时长夹到下限 4', consts.secondsFor25(1) === '4');
+  ok('时长夹到上限 12', consts.secondsFor25(60) === '12');
+  ok('非法时长回退 5', consts.secondsFor25('abc') === '5');
+  for (const n of [1, 3, 5, 8, 12, 30, 100]) {
+    const v = Number(consts.secondsFor25(n));
+    ok(`${n} 秒被夹进 4~12`, v >= 4 && v <= 12, String(v));
+  }
+
+  ok('2.5 有 size 档位', Array.isArray(consts.VIDEO_SIZES_25) && consts.VIDEO_SIZES_25.length >= 2);
+  ok('2.5 size 不含 width/height', !consts.VIDEO_SIZES_25.some((s) => 'width' in s || 'height' in s));
+  ok('2.5 有画幅档位', Array.isArray(consts.VIDEO_ASPECTS_25) && consts.VIDEO_ASPECTS_25.some((a) => a.value === '16:9'));
+  ok('模式表里含音频生视频', consts.VIDEO_MODES.some((m) => m.id === 'audio'));
+}
+
+// ── 前后端对「哪个模型是 2.5」的判断必须一致 ──────────────────
+group('2.5 判定前后端一致');
+{
+  const consts = await import(pathToFileURL(path.join(PUB, 'js', 'consts.js')).href);
+
+  // 后端那份是 CommonJS 内部函数，这里抽出同样的正则做等价性检查：
+  // 真要改判定规则，两边得一起改，否则请求体与界面会对不上。
+  const agnesSrc = read(path.join(ROOT, 'lib', 'agnes.js'));
+  const m = /function isVideo25\(model\)\s*\{[\s\S]*?return\s*(\/.*?\/[a-z]*)\.test/.exec(agnesSrc);
+  ok('后端有 isVideo25', !!m, 'lib/agnes.js 里找不到 isVideo25');
+  if (m) {
+    const backendRe = eval(m[1]); // eslint-disable-line no-eval
+    for (const id of ['agnes-video-2.5', 'agnes-video-v2.5', 'agnes-video-25', 'agnes-video-v2.0', 'agnes-video-2.0', '']) {
+      const fe = consts.isVideo25(id);
+      const be = backendRe.test(String(id || '').toLowerCase());
+      ok(`「${id || '(空)'}」两端判定一致`, fe === be, `前端 ${fe} / 后端 ${be}`);
+    }
+  }
 }
 
 // ── SSE 事件：后端 emit 的，前端必须订阅 ────────────────────

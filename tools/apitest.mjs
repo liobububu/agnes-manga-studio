@@ -692,6 +692,88 @@ group('高级参数通道');
   eq('核心参数不被额外参数覆盖', lastVideoBody.prompt, 'real prompt');
 }
 
+// ── 11e. Video 2.5 换了契约：不能按 2.0 发参数 ────────────────
+// 2.5 文档明确写了 width / height / fps / num_frames 传了直接 400。
+// 模型目录是动态拉的，用户选到 2.5 时如果还发老参数，每个请求都会被拒。
+group('Video 2.5 请求体分流');
+{
+  const r = await api('POST', '/api/videos', {
+    prompt: 'v25 test', project_id: PROJECT_ID,
+    model: 'agnes-video-2.5', mode: 'text_to_video',
+    num_frames: 241, width: 1152, height: 768, frame_rate: 24,
+    duration_seconds: 8, mode_25: 'text', size_25: '1080P', aspect_ratio: '16:9',
+  });
+  eq('2.5 提交成功', r.data.ok, true);
+  ok('2.5 不再发 num_frames', !('num_frames' in lastVideoBody), JSON.stringify(lastVideoBody));
+  ok('2.5 不再发 width/height', !('width' in lastVideoBody) && !('height' in lastVideoBody));
+  ok('2.5 不再发 frame_rate', !('frame_rate' in lastVideoBody));
+  eq('2.5 带 mode', lastVideoBody.mode, 'text');
+  eq('2.5 时长是字符串秒数', lastVideoBody.seconds, '8');
+  eq('2.5 带 size', lastVideoBody.size, '1080P');
+  eq('2.5 带画幅', lastVideoBody.aspect_ratio, '16:9');
+
+  // 时长夹到 4~12：不夹的话选 3 秒会被 400
+  const r3 = await api('POST', '/api/videos', {
+    prompt: 'v25 clamp', project_id: PROJECT_ID, model: 'agnes-video-2.5', duration_seconds: 3,
+  });
+  eq('2.5 短时长被夹到 4', lastVideoBody.seconds, '4');
+  const r30 = await api('POST', '/api/videos', {
+    prompt: 'v25 clamp hi', project_id: PROJECT_ID, model: 'agnes-video-2.5', duration_seconds: 30,
+  });
+  eq('2.5 超长被夹到 12', lastVideoBody.seconds, '12');
+
+  // 老模型必须保持原样，不能因为加了分流就被改坏
+  const old = await api('POST', '/api/videos', {
+    prompt: 'v20 keep', project_id: PROJECT_ID, model: 'agnes-video-v2.0',
+    num_frames: 241, width: 1152, height: 768, frame_rate: 24,
+  });
+  eq('2.0 提交成功', old.data.ok, true);
+  eq('2.0 仍发 num_frames', lastVideoBody.num_frames, 241);
+  eq('2.0 仍发 width', lastVideoBody.width, 1152);
+  eq('2.0 仍发 frame_rate', lastVideoBody.frame_rate, 24);
+  ok('2.0 不带 mode_25 字段', !('seconds' in lastVideoBody));
+}
+
+// ── 11f. 音频生视频（Agnes 2.5 的 audios 参考） ───────────────
+group('音频生视频');
+{
+  const r = await api('POST', '/api/videos', {
+    prompt: 'lip sync <Audio 1>', project_id: PROJECT_ID,
+    model: 'agnes-video-2.5', mode: 'audio_reference',
+    audios: ['https://cdn.example.com/voice1.mp3', 'https://cdn.example.com/voice2.mp3'],
+    duration_seconds: 6, mode_25: 'reference',
+  });
+  eq('音频提交成功', r.data.ok, true);
+  eq('audios 透传给 Agnes', JSON.stringify(lastVideoBody.audios), JSON.stringify(['https://cdn.example.com/voice1.mp3', 'https://cdn.example.com/voice2.mp3']));
+  eq('音频模式是 reference', lastVideoBody.mode, 'reference');
+
+  for (const v of ['https://cdn.example.com/voice1.mp3', 'https://cdn.example.com/voice2.mp3']) {
+    ok('音频公网地址未被动手脚', lastVideoBody.audios.includes(v));
+  }
+
+  // 超过 3 段要拦住，不能悄悄丢掉用户填的内容
+  const many = await api('POST', '/api/videos', {
+    prompt: 'too many audios', project_id: PROJECT_ID, model: 'agnes-video-2.5',
+    audios: ['https://a/1.mp3', 'https://a/2.mp3', 'https://a/3.mp3', 'https://a/4.mp3'],
+  });
+  eq('超过 3 段音频被拒', many.status, 400);
+  ok('提示说明上限', /3/.test(many.data.error || ''), many.data.error);
+
+  // 本机路径 Agnes 抓不到，没配图床时必须明确报错
+  const local = await api('POST', '/api/videos', {
+    prompt: 'local audio', project_id: PROJECT_ID, model: 'agnes-video-2.5',
+    audios: ['/assets/audios/voice.mp3'],
+  });
+  eq('本机音频未配图床时 400', local.status, 400);
+  ok('错误说明指向公网 URL 或图床', /公网|图床/.test(local.data.error || ''), local.data.error);
+
+  // 音频存在资产记录里，事后能复盘用了哪几段
+  const all = await api('GET', '/api/videos');
+  const saved = all.data.find((v) => v.id === r.data.asset.id);
+  ok('资产记录了音频来源', Array.isArray(saved?.source_audios) && saved.source_audios.length === 2,
+    JSON.stringify(saved?.source_audios));
+}
+
 // ── 12. 导入导出 ─────────────────────────────────────────────
 group('导入导出');
 {

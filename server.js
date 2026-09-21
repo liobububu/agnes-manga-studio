@@ -23,7 +23,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.0.5';
+const VERSION = '1.0.6';
 /** 改动前端后递增，exe 会在下次启动重新释放页面 */
 const ASSETS_VERSION = VERSION;
 
@@ -102,7 +102,7 @@ const createRoutes = libRequire('./lib/routes.js');
 // ─────────────────────────────────────────────────────────────
 fs.mkdirSync(APP_HOME, { recursive: true });
 store.init(APP_HOME);
-for (const d of [store.imagesDir(), store.videosDir(), store.exportsDir()]) {
+for (const d of [store.imagesDir(), store.videosDir(), store.audiosDir(), store.exportsDir()]) {
   try { fs.mkdirSync(d, { recursive: true }); } catch { /* ignore */ }
 }
 poller.init(store);

@@ -99,6 +99,50 @@ export const VIDEO_MODES = [
   { id: 'i2v', label: '图生视频', mode: 'image_to_video' },
   { id: 'multi', label: '多图参考', mode: 'multi_image' },
   { id: 'keyframe', label: '关键帧动画', mode: 'keyframe' },
+  { id: 'audio', label: '音频生视频', mode: 'audio_reference' },
+];
+
+/**
+ * Agnes Video 2.5 的请求契约和 2.0 不一样：
+ * 2.5 认 mode / seconds / size / images[] / audios[]，
+ * 而且 width / height / fps / num_frames 传了直接 400。
+ * 模型目录是动态拉的，选中 2.5 时界面和请求体都要跟着换，
+ * 所以判断逻辑放这里，前后端共用同一套规则。
+ */
+export function isVideo25(model) {
+  return /2[._-]?5/.test(String(model || '').toLowerCase());
+}
+
+/** 2.5 的时长参数是字符串 "4"~"12" 秒，超出会被 400 */
+export function secondsFor25(v) {
+  const n = Math.round(Number(v) || 5);
+  return String(Math.min(12, Math.max(4, n)));
+}
+
+/** 2.5 用 size 档位而不是 width/height（传 width/height 会 400） */
+export const VIDEO_SIZES_25 = [
+  { value: '720P', label: '720P' },
+  { value: '1080P', label: '1080P' },
+  { value: '1K', label: '1K' },
+  { value: '2K', label: '2K' },
+];
+
+/** 2.5 用 aspect_ratio 表达画幅 */
+export const VIDEO_ASPECTS_25 = [
+  { value: '16:9', label: '16:9 横屏' },
+  { value: '9:16', label: '9:16 竖屏' },
+  { value: '1:1', label: '1:1 方形' },
+  { value: '4:3', label: '4:3' },
+  { value: '3:4', label: '3:4' },
+];
+
+/** 2.5 时长档位：与 DURATION_PRESETS 的帧数无关，是真正的秒数 */
+export const SECONDS_PRESETS = [
+  { label: '4 秒', seconds: 4 },
+  { label: '5 秒', seconds: 5 },
+  { label: '8 秒', seconds: 8 },
+  { label: '10 秒', seconds: 10 },
+  { label: '12 秒', seconds: 12 },
 ];
 export const SCRIPT_TYPES = [
   { value: 'story_concept', label: '故事构思' },

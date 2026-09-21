@@ -191,6 +191,42 @@ try {
     ok('动态模型面板可打开', await cdp.eval(`!!document.querySelector('#refresh-models') && !!document.querySelector('#m-ttl')`));
     ok('模型默认项可选', await cdp.eval(`document.querySelector('#m-text')?.options.length > 0 && document.querySelector('#m-image')?.options.length > 0 && document.querySelector('#m-video')?.options.length > 0`));
 
+    group('视频生成页：音频生视频模式');
+    await cdp.eval(`location.hash = '#/videos'`);
+    await waitFor(() => cdp.eval(`document.querySelector('.page-title')?.textContent === '视频生成'`), '视频页');
+    ok('五个生成模式都在', await cdp.eval(`document.querySelectorAll('#mode [data-mode]').length === 5`),
+      String(await cdp.eval(`document.querySelectorAll('#mode [data-mode]').length`)));
+    ok('有音频生视频入口', await cdp.eval(`!!document.querySelector('#mode [data-mode="audio"]')`));
+
+    // 切到音频模式：页面要能画出音频输入，而不是白屏或抛错
+    await cdp.eval(`document.querySelector('#mode [data-mode="audio"]')?.click(); return true;`);
+    await waitFor(() => cdp.eval(`!!document.querySelector('#au-list')`), '音频模式表单');
+    ok('音频模式画出音频输入', await cdp.eval(`!!document.querySelector('[data-au]')`));
+    ok('音频模式有提交按钮', await cdp.eval(`!!document.querySelector('#submit')`));
+
+    // 模型下拉换成 2.5 时，参数区要从 num_frames 切到 seconds。
+    // mock 模型目录里没有 2.5，这里直接往下拉插一项——否则这段永远走不到，
+    // 「验过」就成了空话。
+    await cdp.eval(`(() => {
+      const sel = document.querySelector('#model');
+      if (!Array.from(sel.options).some((o) => /2[._-]?5/.test(o.value))) {
+        const o = document.createElement('option');
+        o.value = 'agnes-video-2.5'; o.textContent = 'agnes-video-2.5';
+        sel.appendChild(o);
+      }
+      sel.value = 'agnes-video-2.5';
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    await waitFor(() => cdp.eval(`!!document.querySelector('#f-sec25')`), '2.5 参数区');
+    ok('2.5 显示 seconds 档位', await cdp.eval(`!!document.querySelector('#f-sec25')`));
+    ok('2.5 不再显示 num_frames', await cdp.eval(`!document.querySelector('#f-frames')`));
+    ok('2.5 不再显示帧率', await cdp.eval(`!document.querySelector('#f-fps')`));
+    ok('2.5 显示 size 档位', await cdp.eval(`!!document.querySelector('#f-size25')`));
+    ok('2.5 显示画幅档位', await cdp.eval(`!!document.querySelector('#f-ar25')`));
+    // 音频模式在 2.5 下要保留音频输入，不能被参数区重绘冲掉
+    ok('2.5 下音频输入仍在', await cdp.eval(`!!document.querySelector('[data-au]')`));
+
     const collected = await cdp.eval(`({errors:window.__uiErrors || [], rejects:window.__uiRejects || []})`);
     ok('无 window error', collected?.errors?.length === 0, JSON.stringify(collected?.errors || []));
     ok('无未处理 Promise 拒绝', collected?.rejects?.length === 0, JSON.stringify(collected?.rejects || []));

@@ -5,6 +5,8 @@
  */
 import {
   icon, esc, DURATION_PRESETS, VIDEO_RESOLUTIONS, VIDEO_MODES,
+  SECONDS_PRESETS, isVideo25, secondsFor25,
+  VIDEO_SIZES_25, VIDEO_ASPECTS_25,
   IMAGE_ROLES, statusBadge, relTime, modelChoices,
 } from '../consts.js';
 import { api } from '../api.js';
@@ -33,6 +35,12 @@ export default async function videos(container, params) {
       prompt: 'Create a smooth cinematic transition between keyframes, maintaining character identity, consistent lighting, natural motion',
       frames: 1, seed: '',
     },
+    // 音频生视频（Agnes 2.5 的 audios 参考）：提示词里用 <Audio 1> 指代第 1 段
+    audio: {
+      audios: [''],
+      prompt: 'A person lip-syncs to <Audio 1>, close-up, natural facial motion, cinematic lighting',
+      seconds: 5, seed: '',
+    },
   };
 
   container.innerHTML = `
@@ -46,7 +54,7 @@ export default async function videos(container, params) {
     })}
     <div class="grid" style="grid-template-columns:minmax(340px,1fr) minmax(0,1.25fr);gap:20px">
       <div>
-        <div class="segmented" id="mode" style="grid-template-columns:repeat(4,1fr);margin-bottom:16px">
+        <div class="segmented" id="mode" style="grid-template-columns:repeat(${VIDEO_MODES.length},1fr);margin-bottom:16px">
           ${VIDEO_MODES.map((m) => `<button data-mode="${m.id}" class="${m.id === mode ? 'on' : ''}">${esc(m.label)}</button>`).join('')}
         </div>
         <div class="card" id="form"></div>
@@ -77,8 +85,54 @@ export default async function videos(container, params) {
     };
   });
 
+  // 换模型要重画表单：2.0 和 2.5 的参数区不是同一套
+  container.querySelector('#model').onchange = () => renderForm();
+
+  /**
+   * 参数区随模型族切换：2.5 认 seconds / size / aspect_ratio，
+   * 而且 width / height / fps / num_frames 传了直接 400 —— 继续显示这些输入
+   * 等于让用户填一组注定被拒的参数。
+   */
   function paramsBlock(key, opts = {}) {
     const s = S[key];
+    const v25 = isVideo25(container.querySelector('#model')?.value);
+    // 音频模式没有 frames（它用 seconds），直接取会 DURATION_PRESETS[undefined] 抛错
+    const fi = s.frames || 1;
+
+    if (v25) {
+      const sec = s.seconds || 5;
+      return `
+      <div style="padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);margin-top:16px">
+        <div class="section-label">视频参数（Video 2.5）</div>
+        <div class="field"><label>分辨率 size</label>
+          <select class="select" id="f-size25">
+            ${VIDEO_SIZES_25.map((r) => `<option value="${r.value}"${r.value === (s.size25 || '720P') ? ' selected' : ''}>${esc(r.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>画幅比例</label>
+          <select class="select" id="f-ar25">
+            ${VIDEO_ASPECTS_25.map((r) => `<option value="${r.value}"${r.value === (s.ar25 || '16:9') ? ' selected' : ''}>${esc(r.label)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>时长 seconds</label>
+          <div class="chips" id="f-sec25">
+            ${SECONDS_PRESETS.map((p) => `<button class="chip ${p.seconds === sec ? 'on' : ''}" data-sec="${p.seconds}">${esc(p.label)}</button>`).join('')}
+          </div>
+          <div class="hint">2.5 的时长是秒数，取值 <b>4~12</b>（不是 num_frames）</div>
+        </div>
+        <div class="field">
+          <label>Seed（留空随机）</label>
+          <input class="input mono" id="f-seed" value="${esc(s.seed || '')}" placeholder="随机" />
+        </div>
+        <div class="field">
+          <label>高级参数（JSON，可选）</label>
+          <textarea class="textarea mono" id="f-extra" rows="2" placeholder='{"字段名": "值"}'>${esc(s.extra || '')}</textarea>
+          <div class="hint">2.5 不支持 width / height / fps / num_frames，传了会被拒，所以这里不提供。</div>
+        </div>
+      </div>`;
+    }
+
     return `
       <div style="padding-top:16px;border-top:1px solid rgba(255,255,255,0.08);margin-top:16px">
         <div class="section-label">视频参数</div>
@@ -91,9 +145,9 @@ export default async function videos(container, params) {
         <div class="field">
           <label>视频时长</label>
           <div class="chips" id="f-frames">
-            ${DURATION_PRESETS.map((p, i) => `<button class="chip ${i === s.frames ? 'on' : ''}" data-i="${i}">${esc(p.label)}</button>`).join('')}
+            ${DURATION_PRESETS.map((p, i) => `<button class="chip ${i === fi ? 'on' : ''}" data-i="${i}">${esc(p.label)}</button>`).join('')}
           </div>
-          <div class="hint">num_frames = <b>${DURATION_PRESETS[s.frames].frames}</b>（Agnes 要求 8n+1，最大 441）</div>
+          <div class="hint">num_frames = <b>${DURATION_PRESETS[fi].frames}</b>（Agnes 要求 8n+1，最大 441）</div>
         </div>
         <div class="field">
           <label>帧率 frame_rate</label>
@@ -109,7 +163,7 @@ export default async function videos(container, params) {
           <div class="hint">
             Agnes 若新增了能力（例如音频驱动、新的控制字段），直接在这里传参就能用上，不用等程序更新。
             已填的提示词、模型、尺寸等常规参数不会被这里覆盖。
-            目前 Agnes 官方公开的是文生视频、图生视频、多图参考和关键帧这几种。
+            目前 Agnes 官方公开的是文生视频、图生视频、多图参考、关键帧和音频参考这几种。
           </div>
         </div>
       </div>`;
@@ -131,6 +185,17 @@ export default async function videos(container, params) {
     if (seed) seed.oninput = () => { s.seed = seed.value; };
     const res = container.querySelector('#f-res');
     if (res) res.onchange = () => { s.res = Number(res.value); };
+    // Video 2.5 的控件（与上面互斥，靠 id 区分）
+    container.querySelectorAll('#f-sec25 [data-sec]').forEach((b) => {
+      b.onclick = () => {
+        s.seconds = Number(b.getAttribute('data-sec'));
+        container.querySelectorAll('#f-sec25 [data-sec]').forEach((x) => x.classList.toggle('on', x === b));
+      };
+    });
+    const size25 = container.querySelector('#f-size25');
+    if (size25) size25.onchange = () => { s.size25 = size25.value; };
+    const ar25 = container.querySelector('#f-ar25');
+    if (ar25) ar25.onchange = () => { s.ar25 = ar25.value; };
     const extra = container.querySelector('#f-extra');
     if (extra) extra.oninput = () => { s.extra = extra.value; };
   }
@@ -225,7 +290,7 @@ export default async function videos(container, params) {
       const add = box.querySelector('#mi-add');
       if (add) add.onclick = () => { S.multi.imgs.push({ url: '', role: '场景参考' }); renderForm(); };
       bindParams('multi');
-    } else {
+    } else if (mode === 'keyframe') {
       box.innerHTML = `
         <div class="section-label">关键帧图片（公网 URL）</div>
         <div class="field"><label>起始关键帧 *</label><input class="input mono" id="kf-start" value="${esc(S.kf.start)}" placeholder="https://…" /></div>
@@ -240,6 +305,26 @@ export default async function videos(container, params) {
       box.querySelector('#kf-end').oninput = (e) => { S.kf.end = e.target.value; };
       box.querySelector('#f-prompt').oninput = (e) => { S.kf.prompt = e.target.value; };
       bindParams('kf');
+    } else if (mode === 'audio') {
+      box.innerHTML = `
+        <div class="section-label">参考音频（公网 URL，最多 3 段）</div>
+        <div id="au-list"></div>
+        ${S.audio.audios.length < 3 ? `<button class="btn btn-sm btn-block" id="au-add" style="margin-bottom:14px">${icon('plus', 13)}添加音频</button>` : ''}
+        <div class="section-label">画面描述</div>
+        <div class="field"><textarea class="textarea mono" id="f-prompt" rows="4">${esc(S.audio.prompt)}</textarea>
+          <div class="hint">用 <b>&lt;Audio 1&gt;</b> 指代第 1 段音频、&lt;Audio 2&gt; 指代第 2 段；画面会跟着音频的节奏走。</div>
+        </div>
+        ${paramsBlock('audio', { res: false })}
+        <div class="note" style="margin-top:12px">
+          音频总时长 2~12 秒、单段小于 15 MB。Agnes 要能直接抓到这个 URL，
+          本机路径不行——需要公网直链。
+        </div>
+        <button class="btn btn-primary btn-block" id="submit">${icon('wand', 15)}音频生视频</button>`;
+      box.querySelector('#f-prompt').oninput = (e) => { S.audio.prompt = e.target.value; };
+      const add = box.querySelector('#au-add');
+      if (add) add.onclick = () => { S.audio.audios.push(''); renderForm(); };
+      bindParams('audio');
+      renderAu();
     }
     box.querySelector('#submit').onclick = submit;
   }
@@ -248,6 +333,22 @@ export default async function videos(container, params) {
     const el = container.querySelector('#img-preview');
     if (!el) return;
     el.innerHTML = url ? `<img src="${esc(url)}" style="max-height:110px;max-width:100%;border-radius:10px;border:1px solid var(--border)" onerror="this.style.display='none'" />` : '';
+  }
+
+  function renderAu() {
+    const el = container.querySelector('#au-list');
+    if (!el) return;
+    el.innerHTML = S.audio.audios.map((a, i) => `
+      <div class="row" style="margin-bottom:8px">
+        <input class="input mono input-sm" data-au="${i}" value="${esc(a)}" placeholder="音频 ${i + 1} URL（公网直链）" style="height:36px" />
+        ${S.audio.audios.length > 1 ? `<button class="icon-btn danger" data-udel="${i}" style="background:rgba(255,69,58,0.10);color:var(--err)">${icon('trash', 13)}</button>` : ''}
+      </div>`).join('');
+    el.querySelectorAll('[data-au]').forEach((x) => {
+      x.oninput = () => { S.audio.audios[Number(x.getAttribute('data-au'))] = x.value; };
+    });
+    el.querySelectorAll('[data-udel]').forEach((x) => {
+      x.onclick = () => { S.audio.audios.splice(Number(x.getAttribute('data-udel')), 1); renderForm(); };
+    });
   }
 
   function renderMi() {
@@ -305,7 +406,7 @@ export default async function videos(container, params) {
         width: 1152, height: 768, num_frames: DURATION_PRESETS[S.multi.frames].frames,
         frame_rate: 24, seed: S.multi.seed || undefined,
       });
-    } else {
+    } else if (mode === 'keyframe') {
       if (!S.kf.start.trim() || !S.kf.end.trim()) { toast.err('起始帧和结束帧都要填'); return; }
       const frames = [{ url: S.kf.start, role: '起始画面' }, { url: S.kf.end, role: '目标画面' }];
       if (S.kf.middle.trim()) frames.splice(1, 0, { url: S.kf.middle, role: '中间帧' });
@@ -314,6 +415,35 @@ export default async function videos(container, params) {
         width: 1152, height: 768, num_frames: DURATION_PRESETS[S.kf.frames].frames,
         frame_rate: 24, seed: S.kf.seed || undefined,
       });
+    } else {
+      // 音频生视频：Agnes 2.5 的 audios 参考
+      const valid = S.audio.audios.map((a) => a.trim()).filter(Boolean);
+      if (!valid.length) { toast.err('请至少填一段音频 URL'); return; }
+      const bad = valid.find((a) => !/^https?:\/\//.test(a));
+      if (bad) { toast.err('音频必须是 http(s) 开头的公网直链，Agnes 抓不到本机文件'); return; }
+      if (valid.length > 3) { toast.err('音频最多 3 段'); return; }
+      if (!S.audio.prompt.trim()) { toast.err('请输入画面描述'); return; }
+      if (!isVideo25(model)) {
+        toast.err('音频生视频是 Agnes Video 2.5 的能力，请在上方模型下拉里选一个 2.5 模型');
+        return;
+      }
+      Object.assign(payload, {
+        mode: 'audio_reference', prompt: S.audio.prompt, audios: valid,
+        mode_25: 'reference', duration_seconds: S.audio.seconds || 5,
+        seed: S.audio.seed || undefined,
+      });
+    }
+
+    // Video 2.5 的参数：这一套字段和服务端 agnes.js 的分流逻辑对应
+    if (isVideo25(model) && mode !== 'audio') {
+      const key = mode === 'keyframe' ? 'kf' : mode;   // 界面 mode id 与状态键不完全同名
+      const s = S[key];
+      payload.mode_25 = mode === 't2v' ? 'text' : mode === 'keyframe' ? 'keyframe' : 'reference';
+      payload.duration_seconds = s.seconds
+        || Math.round((DURATION_PRESETS[s.frames || 1].frames - 1) / 24) || 5;
+      payload.duration_seconds = Number(secondsFor25(payload.duration_seconds));
+      payload.size_25 = s.size25 || '720P';
+      payload.aspect_ratio = s.ar25 || '16:9';
     }
 
     // 高级参数：解析失败就不提交，别把坏参数发给 Agnes
