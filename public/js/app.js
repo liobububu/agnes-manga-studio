@@ -116,11 +116,34 @@ export async function refreshState() {
     state.stats = r.data.stats || {};
     state.templates = r.data.templates || [];
     state.models = r.data.models || state.models;
+    state.loadIssues = Array.isArray(r.data.load_issues) ? r.data.load_issues : [];
     // 图床状态决定「本地图片能不能用于图生视频」，各页面都要看
     const ih = await api.imageHost();
     if (ih.ok) state.imageHost = ih.data;
     renderSidebar();
+    showLoadIssues();
   }
+}
+
+/**
+ * 数据文件损坏时明确告诉用户。
+ * 不提示的话，程序只是「安静地变成空库」，用户会以为是项目被删了。
+ * 只在启动时提示一次，之后不再打扰。
+ */
+let loadIssuesShown = false;
+function showLoadIssues() {
+  if (loadIssuesShown) return;
+  const issues = state.loadIssues || [];
+  if (!issues.length) return;
+  loadIssuesShown = true;
+
+  const worst = issues.some((i) => i.level === 'error') ? 'error' : 'warn';
+  const lines = issues.map((i) => `· ${i.msg}`).join('\n');
+  const msg = issues.length === 1
+    ? lines.replace(/^· /, '')
+    : `启动时有 ${issues.length} 个数据加载问题：\n${lines}`;
+  if (worst === 'error') toast.err(msg, 15000);
+  else toast.warn(msg, 12000);
 }
 
 /** 给页面用：改了项目/设置之后刷新侧边栏与统计 */

@@ -23,7 +23,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.1.0';
+const VERSION = '1.1.1';
 /** 改动前端后递增，exe 会在下次启动重新释放页面 */
 const ASSETS_VERSION = VERSION;
 

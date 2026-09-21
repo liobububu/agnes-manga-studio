@@ -438,6 +438,54 @@ group('素材落盘');
   eq('空名字给默认值', path.basename(routes.safeName('', 'png')).startsWith('asset_'), true);
 }
 
+// ── 10. 数据文件损坏的恢复 ───────────────────────────────────
+// 本地应用的命门：db.json 坏了会怎样。最坏的情况不是报错，
+// 是「静默起一个空库」，用户打开一看项目全没了却不知道为什么。
+group('数据损坏恢复');
+{
+  const D = path.join(HOME, '..', `agnes-corrupt-${process.pid}`);
+  const wipe = () => fs.rmSync(D, { recursive: true, force: true });
+  const write = (n, s) => { fs.mkdirSync(D, { recursive: true }); fs.writeFileSync(path.join(D, n), s); };
+
+  // 1) 主文件坏 + 备份好 → 从备份恢复，且坏文件另存（不能让它变成新的 .bak）
+  wipe();
+  write('db.json', '{ 这不是合法 JSON');
+  write('db.json.bak', JSON.stringify({ projects: [{ id: 'p1', name: '备份里的项目' }] }));
+  store.init(D);
+  eq('从备份恢复了数据', store.count('projects'), 1);
+  eq('恢复的是备份内容', store.list('projects')[0].name, '备份里的项目');
+  const issues1 = store.getLoadIssues();
+  ok('记录了恢复过程', issues1.some((i) => /备份恢复/.test(i.msg)), JSON.stringify(issues1));
+  ok('坏文件被另存', fs.readdirSync(D).some((f) => f.startsWith('db.json.corrupt-')), fs.readdirSync(D).join(','));
+
+  // 关键：坏文件已被挪走，下次写盘不会把好的备份覆盖掉
+  store.persist();
+  await new Promise((r) => setTimeout(r, 120));
+  const bakAfter = JSON.parse(fs.readFileSync(path.join(D, 'db.json.bak'), 'utf8'));
+  ok('好备份没被坏文件顶掉', Array.isArray(bakAfter.projects) && bakAfter.projects.length === 1,
+    JSON.stringify(bakAfter).slice(0, 120));
+
+  // 2) 主文件坏 + 备份也坏 → 空库，但必须留下 error 级提示
+  wipe();
+  write('db.json', 'garbage');
+  write('db.json.bak', 'also garbage');
+  store.init(D);
+  eq('两边都坏时按空库启动', store.count('projects'), 0);
+  const issues2 = store.getLoadIssues();
+  ok('空库启动有 error 级提示', issues2.some((i) => i.level === 'error' && /空库/.test(i.msg)),
+    JSON.stringify(issues2));
+
+  // 3) 文件正常时不该有任何提示
+  wipe();
+  write('db.json', JSON.stringify({ projects: [{ id: 'ok1', name: '正常项目' }] }));
+  store.init(D);
+  eq('正常文件照常加载', store.count('projects'), 1);
+  eq('正常时无加载问题', store.getLoadIssues().length, 0);
+
+  wipe();
+  store.init(HOME);   // 收尾前把 store 指回原目录
+}
+
 // ── 收尾 ─────────────────────────────────────────────────────
 fs.rmSync(HOME, { recursive: true, force: true });
 
