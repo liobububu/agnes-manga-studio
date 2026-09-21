@@ -15,8 +15,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const port = 30000 + (process.pid % 10000);
 const cdpPort = port + 1;
 const stamp = `${process.pid}-${Date.now().toString(36)}`;
-const home = path.join(ROOT, 'build', `ui-home-${stamp}`);
-const profile = path.join(ROOT, 'build', `ui-profile-${stamp}`);
+const RUN_ID = `${process.pid.toString(36)}${Date.now().toString(36)}`;
+const home = path.join(ROOT, 'build', 'ui-home-${RUN_ID}');
+fs.mkdirSync(home, { recursive: true });
+const profile = path.join(ROOT, 'build', 'ui-profile-${RUN_ID}');
+fs.mkdirSync(profile, { recursive: true });
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -146,6 +149,7 @@ try {
     ok('侧边栏存在', await cdp.eval(`!!document.querySelector('.sidebar') && document.querySelector('.sidebar').getBoundingClientRect().height > 0`));
     ok('快速入口存在', await cdp.eval(`document.querySelectorAll('.quick-item').length === 6`));
     ok('工作台非白屏', await cdp.eval(`document.body.innerText.includes('开始你的下一部漫剧')`));
+    ok('未配置时显示设置引导', await cdp.eval(`document.body.innerText.includes('还没有配置 Agnes API Key')`));
 
     group('页面切换');
     const pages = [
@@ -212,4 +216,9 @@ try {
 
 console.log(`\n__RESULT__ pass=${pass} fail=${fail}`);
 if (failures.length) failures.forEach((x) => console.log(`  ✗ ${x}`));
+// 全绿才回收现场；有失败则留下排查（用独立目录名是为了不读到上一轮的密钥）
+if (!fail) {
+  try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* 清不掉不影响结果 */ }
+  try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 清不掉不影响结果 */ }
+}
 process.exitCode = fail ? 1 : 0;

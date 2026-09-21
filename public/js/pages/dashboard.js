@@ -21,6 +21,7 @@ export default async function dashboard(container) {
       <h2>开始你的下一部漫剧</h2>
       <p>所有数据保存在本机，API Key 也只存在本机设置文件里。断网不影响编辑，只有调用 Agnes 生成那一步需要联网。</p>
     </div>
+    <div id="setup-alert" style="margin-top:14px"></div>
     <div id="stats" class="stat-grid" style="margin-bottom:22px">${spinner('加载统计…')}</div>
 
     <div class="section-label">快速开始</div>
@@ -64,6 +65,21 @@ export default async function dashboard(container) {
     const [st, pr, im, vd] = await Promise.all([
       api.stats(), api.projects(), api.images(), api.videos(),
     ]);
+
+    const alerts = [];
+    if (!state.settings.agnes_api_key) {
+      alerts.push(`<div class="note orange"><span>${icon('key', 14)}还没有配置 Agnes API Key。配置后才能生成脚本、图片和视频。</span><button class="btn btn-xs" id="go-api">去设置</button></div>`);
+    } else if (!state.models?.models?.length) {
+      alerts.push(`<div class="note gold"><span>${icon('cpu', 14)}还没有模型目录。先拉取 Agnes 当前模型，避免使用过期模型名。</span><button class="btn btn-xs" id="go-model">拉取模型</button></div>`);
+    }
+    if (state.settings.agnes_api_key && !state.imageHost?.configured) {
+      alerts.push(`<div class="note" style="margin-top:8px"><span>${icon('cloud', 14)}图生视频需要公网图片。配置图床后，本机生成的分镜图会自动上传，不再降级为文生视频。</span><button class="btn btn-xs" id="go-host">配置图床</button></div>`);
+    }
+    const alertEl = container.querySelector('#setup-alert');
+    alertEl.innerHTML = alerts.join('');
+    alertEl.querySelector('#go-api')?.addEventListener('click', () => navigate('settings'));
+    alertEl.querySelector('#go-model')?.addEventListener('click', () => navigate('settings', { section: 'model' }));
+    alertEl.querySelector('#go-host')?.addEventListener('click', () => navigate('settings', { section: 'host' }));
 
     if (st.ok) {
       const s = st.data;

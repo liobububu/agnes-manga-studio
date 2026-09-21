@@ -18,8 +18,9 @@ const SECTIONS = [
   { id: 'about', label: '关于', icon: 'info' },
 ];
 
-export default async function settings(container) {
-  let section = 'api';
+export default async function settings(container, params = {}) {
+  const validSections = new Set(SECTIONS.map((s) => s.id));
+  let section = validSections.has(params.section) ? params.section : 'api';
   let settings = {};
   let templates = [];
   let keyVisible = false;
@@ -290,7 +291,7 @@ export default async function settings(container) {
           · 去掉用户系统：没有注册登录，数据不需要跨账号隔离<br>
           · 去掉 Supabase：项目、剧本、分镜、素材全存本机 JSON 文件<br>
           · 去掉 Edge Function：Agnes 请求由本地服务直接代发，少一层超时<br>
-          · 图片生成结果落盘到本地素材库，不再依赖公网图床<br>
+          · 图片生成结果默认落盘到本地素材库；需要图生视频时可选图床自动上传<br>
           · 视频轮询搬到本地服务后台，关掉浏览器也继续跑<br>
           · 新增：批量生成队列、提示词模板管理、项目导出、全量备份导入<br>
           · 修复：文本/图片任务不再只写库不记录，任务页文本、图片标签有历史了

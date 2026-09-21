@@ -286,4 +286,6 @@ if (failures.length) {
   failures.forEach((f) => console.log(`   ✗ ${f}`));
 }
 console.log(`${'═'.repeat(52)}\n`);
-process.exit(fail ? 1 : 0);
+// ⚠️ 不能用 process.exit()：stdout 重定向到文件/管道时是异步的，exit() 会
+//    把还没刷出的缓冲丢掉——末尾的汇总标记就没了，上层判失败。
+process.exitCode = fail ? 1 : 0;

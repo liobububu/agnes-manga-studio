@@ -621,7 +621,19 @@ group('图床与图生视频');
   });
   eq('已存公网地址的图无需图床也能提交', reused.data.ok, true);
 
+  // 关闭自动上传后，本地图必须明确拒绝，不能偷偷违背用户设置
+  await api('PUT', '/api/settings', { image_host_type: 'custom', image_host_endpoint: `${HOST_BASE}/upload`, image_host_key: 'test-key', auto_upload_image: '0' });
+  const ir0 = await api('POST', '/api/agnes/image', {
+    prompt: 'auto upload off', project_id: PROJECT_ID, size: '1024x1024',
+  });
+  const off = await api('POST', '/api/videos', {
+    prompt: 'auto upload off', project_id: PROJECT_ID, mode: 'image_to_video', image: ir0.data.asset.url,
+  });
+  eq('关闭自动上传时拒绝本地图', off.status, 400);
+  ok('关闭自动上传错误说明清楚', /自动上传/.test(off.data.error || ''), off.data.error);
+
   // 没配图床 + 一张还没传过的本地图：必须明确报错，不能把无效参数发给 Agnes
+  await api('PUT', '/api/settings', { image_host_type: '', image_host_key: '', auto_upload_image: '1' });
   const ir2 = await api('POST', '/api/agnes/image', {
     prompt: 'never uploaded', project_id: PROJECT_ID, size: '1024x1024',
   });
@@ -757,6 +769,7 @@ group('级联删除');
 // ── 收尾 ─────────────────────────────────────────────────────
 srv.kill();
 mock.close();
+hostMock.close();
 await sleep(400);
 fs.rmSync(HOME, { recursive: true, force: true });
 
@@ -767,4 +780,6 @@ if (failures.length) {
   failures.forEach((f) => console.log(`   ✗ ${f}`));
 }
 console.log(`${'═'.repeat(52)}\n`);
-process.exit(fail ? 1 : 0);
+// ⚠️ 不能用 process.exit()：stdout 重定向到文件/管道时是异步的，exit() 会
+//    把还没刷出的缓冲丢掉——末尾的汇总标记就没了，上层判失败。
+process.exitCode = fail ? 1 : 0;
