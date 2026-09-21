@@ -456,6 +456,29 @@ group('素材落盘');
   const evil2 = routes.safeName('a/b\\c:*.png', 'png');
   ok('非法字符被替换', !/[\\/:*?"<>|]/.test(path.basename(evil2)), evil2);
   eq('空名字给默认值', path.basename(routes.safeName('', 'png')).startsWith('asset_'), true);
+
+  /**
+   * 图片必须只存「文件在哪」，不能把 base64 正文塞进 db.json。
+   * 每次写盘都是 JSON.stringify 整个库，一张 2MB 图的 base64 进去，
+   * 库就变成几十 MB，之后每次轮询落盘都要重写一遍——表现为「越用越卡」，
+   * 而且很难联想到是某张图的问题。这条断言把这种写法挡在门外。
+   */
+  const bigB64 = Buffer.alloc(256 * 1024, 7).toString('base64');   // 256KB 图
+  const big = routes.saveImageBase64(bigB64, 'image/png');
+  const rec = store.insert('image_assets', {
+    project_id: null, name: '大图', url: big.url, local_file: big.file,
+    generation_prompt: 'a big image', mime: 'image/png',
+  });
+  ok('大图也只存路径不存正文', !JSON.stringify(rec).includes(bigB64.slice(0, 200)),
+    'base64 被写进了记录');
+  const longest = Object.values(rec).reduce((m, v) => Math.max(m, typeof v === 'string' ? v.length : 0), 0);
+  ok('记录里没有超长字段', longest < 2000, `最长字段 ${longest} 字符`);
+
+  // 实测：中等规模库的一次全量落盘要在可接受范围内
+  const t0 = Date.now();
+  store.persist();
+  await new Promise((r) => setTimeout(r, 300));
+  ok('一次全量落盘在 1 秒内', Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
 }
 
 // ── 10. 数据文件损坏的恢复 ───────────────────────────────────
