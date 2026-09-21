@@ -972,6 +972,46 @@ group('素材 Range 请求');
   eq('audios 素材可访问', au.status, 200);
 }
 
+// ── 18. 单实例保护 ───────────────────────────────────────────
+// 两个实例共用一份 db.json 会互相覆盖，改动静默丢失，必须挡在启动前。
+// 放最后：这一组会停掉被测服务。
+group('单实例保护');
+{
+  const lockFile = path.join(HOME, 'app.lock');
+  ok('运行中持有锁文件', fs.existsSync(lockFile), lockFile);
+  const lock = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+  eq('锁里记了 pid', lock.pid, srv.pid);
+  eq('锁里记了端口', Number(lock.port), srvPort);
+
+  // 第二个实例：同一数据目录应被拒绝
+  const second = spawn(NODE, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PORT: '0', NO_OPEN: '1', AGNES_STUDIO_HOME: HOME },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out2 = '';
+  second.stdout.on('data', (d) => { out2 += d.toString(); });
+  const code2 = await new Promise((r) => second.on('exit', r));
+  await new Promise((r) => setTimeout(r, 200));
+  ok('第二个实例主动退出', code2 === 0, `退出码 ${code2}`);
+  ok('提示已在运行', /已经在运行/.test(out2), out2.slice(0, 200));
+  ok('提示给出访问地址', /http:\/\/127\.0\.0\.1:/.test(out2), out2.slice(0, 300));
+  // 锁不能被第二个实例抢走或删掉
+  ok('锁仍属于原实例', JSON.parse(fs.readFileSync(lockFile, 'utf8')).pid === srv.pid);
+
+  // 僵锁（上一个进程被强杀没清理）要能被接管，不能让用户永远打不开
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: 999999, port: 5178, version: 'old' }));
+  const third = spawn(NODE, [path.join(ROOT, 'server.js')], {
+    env: { ...process.env, PORT: String(srvPort + 50), NO_OPEN: '1', AGNES_STUDIO_HOME: HOME },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let out3 = '';
+  third.stdout.on('data', (d) => { out3 += d.toString(); });
+  await new Promise((r) => setTimeout(r, 2500));
+  ok('僵锁被接管后能启动', /访问地址/.test(out3), out3.slice(0, 200));
+  third.kill();
+  await sleep(300);
+}
+
 // ── 收尾 ─────────────────────────────────────────────────────
 srv.kill();
 mock.close();

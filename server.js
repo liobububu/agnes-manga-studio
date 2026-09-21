@@ -23,7 +23,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.1.4';
+const VERSION = '1.1.5';
 /** 改动前端后递增，exe 会在下次启动重新释放页面 */
 const ASSETS_VERSION = VERSION;
 
@@ -352,8 +352,62 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
-// 启动
+// 单实例保护
 // ─────────────────────────────────────────────────────────────
+/**
+ * 同一个数据目录只允许一个实例。
+ *
+ * 不加保护的话，双击两次 exe 会起两个进程，共用同一个 db.json，
+ * 端口还自动顺延到 5179 —— 于是两个浏览器窗口各自改各自的内存副本，
+ * 写盘时后一个直接覆盖前一个，改动会静默丢失，用户完全看不出来。
+ * 所以这里宁可拒绝启动并告诉用户程序已经在哪儿跑着。
+ */
+const LOCK_FILE = path.join(APP_HOME, 'app.lock');
+
+function pidAlive(pid) {
+  if (!pid || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+let lockHeld = false;
+
+function acquireLock() {
+  const write = () => {
+    const fd = fs.openSync(LOCK_FILE, 'wx');
+    fs.writeSync(fd, JSON.stringify({ pid: process.pid, version: VERSION, started_at: new Date().toISOString() }));
+    fs.closeSync(fd);
+    lockHeld = true;
+  };
+  try {
+    write();
+    return { ok: true };
+  } catch (e) {
+    if (e.code !== 'EEXIST') return { ok: true };   // 建不了锁就别拦着启动
+  }
+
+  // 锁已存在：持有者还活着吗
+  let holder = null;
+  try { holder = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8')); } catch { /* 锁内容坏了 */ }
+  if (holder && pidAlive(Number(holder.pid))) {
+    return { ok: false, holder };
+  }
+
+  // 上一个进程没来得及清理（崩溃、强杀）——僵锁，接管
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+  try { write(); return { ok: true, tookOver: true }; } catch { return { ok: true }; }
+}
+
+/**
+ * 只删自己持有的锁。
+ * 没这个标记的话，被拒绝启动的第二个实例在退出时会把第一个实例的锁删掉——
+ * 于是第三个实例又能起来了，保护形同虚设。
+ */
+function releaseLock() {
+  if (!lockHeld) return;
+  lockHeld = false;
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+}
+
 const START_PORT = Number(process.env.PORT || 5178);
 const MAX_TRY = 40;
 
@@ -369,6 +423,12 @@ function listen(port, attempt = 0) {
   });
   server.listen(port, '127.0.0.1', () => {
     const url = `http://127.0.0.1:${port}`;
+    // 端口定下来后补进锁里，第二个实例就能直接告诉用户该去哪儿
+    try {
+      fs.writeFileSync(LOCK_FILE, JSON.stringify({
+        pid: process.pid, port, version: VERSION, started_at: new Date().toISOString(),
+      }));
+    } catch { /* 写不进不影响运行 */ }
     const resumed = poller.resume();
     banner(url, port, resumed);
     if (!process.env.NO_OPEN) openBrowser(url);
@@ -403,8 +463,33 @@ function openBrowser(url) {
   } catch { /* 打不开就算了，地址已经印在控制台 */ }
 }
 
-process.on('SIGINT', () => { console.log('\n正在退出…'); process.exit(0); });
+process.on('SIGINT', () => { console.log('\n正在退出…'); releaseLock(); process.exit(0); });
+process.on('SIGTERM', () => { releaseLock(); process.exit(0); });
+process.on('exit', releaseLock);
+// 崩溃也要放锁，否则下一次启动会以为还有实例在跑（虽然有僵锁接管兜底）
+process.on('uncaughtException', (e) => {
+  console.error('\n✗ 未捕获异常：', e && e.stack ? e.stack : e);
+  releaseLock();
+  process.exit(1);
+});
 
-if (require.main === module) listen(START_PORT);
+if (require.main === module) {
+  const lock = acquireLock();
+  if (!lock.ok) {
+    const h = lock.holder || {};
+    console.log('');
+    console.log('  Agnes 漫剧工坊已经在运行了。');
+    console.log('');
+    console.log(`  数据目录    ${APP_HOME}`);
+    if (h.port) console.log(`  访问地址    http://127.0.0.1:${h.port}`);
+    console.log('');
+    console.log('  同一份数据只允许开一个实例：两个实例各改各的内存副本，');
+    console.log('  写盘时会互相覆盖，改动会静默丢失。');
+    console.log('  请用已经打开的那个窗口；确认它已退出后可重新启动。');
+    console.log('');
+    process.exit(0);
+  }
+  listen(START_PORT);
+}
 
 module.exports = { server, listen, APP_HOME, VERSION, parseRange, safeResolve };
