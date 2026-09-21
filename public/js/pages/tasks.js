@@ -205,12 +205,14 @@ export default async function tasks(container) {
 
     bindOne('fav', async (id) => {
       const v = videos.find((x) => x.id === id);
-      await api.updateVideo(id, { is_favorited: !v.is_favorited });
+      const r = await api.updateVideo(id, { is_favorited: !v.is_favorited });
+      if (!r.ok) toast.err(r.error || '收藏失败');
       load();
     });
     bindOne('favt', async (id) => {
       const t = others.find((x) => x.id === id);
-      await api.updateTask(id, { is_favorited: !t.is_favorited });
+      const r = await api.updateTask(id, { is_favorited: !t.is_favorited });
+      if (!r.ok) toast.err(r.error || '收藏失败');
       load();
     });
     bindOne('refresh', async (id, btn) => {

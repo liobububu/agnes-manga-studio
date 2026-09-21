@@ -150,7 +150,8 @@ export default async function assets(container, params) {
     el.querySelectorAll('[data-fav]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       const img = images.find((x) => x.id === b.getAttribute('data-fav'));
-      await api.updateImage(img.id, { is_favorited: !img.is_favorited });
+      const r = await api.updateImage(img.id, { is_favorited: !img.is_favorited });
+      if (!r.ok) toast.err(r.error || '收藏失败');
       load();
     });
     el.querySelectorAll('[data-cp]').forEach((b) => b.onclick = (e) => {
@@ -225,7 +226,8 @@ export default async function assets(container, params) {
     el.querySelectorAll('[data-favv]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();
       const v = videos.find((x) => x.id === b.getAttribute('data-favv'));
-      await api.updateVideo(v.id, { is_favorited: !v.is_favorited });
+      const r = await api.updateVideo(v.id, { is_favorited: !v.is_favorited });
+      if (!r.ok) toast.err(r.error || '收藏失败');
       load();
     });
     el.querySelectorAll('[data-save]').forEach((b) => b.onclick = async (e) => {

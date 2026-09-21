@@ -157,6 +157,20 @@ group('API 方法');
     ok(`api.${n} 已定义`, defined.has(n));
   }
 
+  // 调了接口却把返回值扔掉 = 失败时静默无声。
+  // 收藏开关那 5 处就是这样：保存失败后 load() 把它弹回原样，用户以为没点上。
+  const files2 = [...listJs(path.join(PUB, 'js', 'pages')), path.join(PUB, 'js', 'app.js')];
+  const discarded = [];
+  for (const file of files2) {
+    const src = read(file);
+    src.split('\n').forEach((line, i) => {
+      if (/^\s*await\s+api\.[a-zA-Z]+\(.*\)\s*;?\s*$/.test(line)) {
+        discarded.push(`${path.basename(file)}:${i + 1} ${line.trim()}`);
+      }
+    });
+  }
+  ok('没有丢弃返回值的接口调用', discarded.length === 0, discarded.join(' | '));
+
   // 反向：定义了却没人用的方法就是死代码。
   // 之前攒了 6 个（models / updateScript / createImage / createTask / batch / logs），
   // 光查「用了的是否有定义」永远发现不了。

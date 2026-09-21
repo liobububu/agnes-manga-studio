@@ -81,8 +81,10 @@ export default async function storyboards(container, params) {
     job = j;
     const bar = container.querySelector('#batch-bar');
     renderBatchBar(bar, j, async (id) => {
-      await api.cancelBatch(id);
-      toast.warn('已请求取消，当前这一项跑完就停');
+      const c = await api.cancelBatch(id);
+      // 取消失败多半是任务已经跑完了，这时再报「已请求取消」是假消息
+      if (c.ok) toast.warn('已请求取消，当前这一项跑完就停');
+      else toast.err(c.error || '取消失败（任务可能已经结束）');
     });
     if (j.status !== 'running') {
       load();
@@ -264,8 +266,9 @@ ${text}`,
     if (!targets.length) { toast.info('没有需要补充的镜头'); return; }
     const bar = container.querySelector('#batch-bar');
     let done = 0;
+    let failed = 0;
     for (const s of targets) {
-      bar.innerHTML = `<div class="note gold"><div class="row"><div class="spinner sm"></div><span>${kind === 'image' ? '生成图片提示词' : '生成视频提示词'}：${done + 1} / ${targets.length}</span></div></div>`;
+      bar.innerHTML = `<div class="note gold"><div class="row"><div class="spinner sm"></div><span>${kind === 'image' ? '生成图片提示词' : '生成视频提示词'}：${done + failed + 1} / ${targets.length}</span></div></div>`;
       const sys = kind === 'image'
         ? '你是专业的AI漫剧分镜图提示词工程师，请生成适合图像生成的英文提示词，风格统一，细节丰富。只输出提示词，不要解释。'
         : '你是专业的AI视频提示词工程师。请用英文输出，只描述画面运动与镜头运动，不要重复静态外观。';
@@ -275,12 +278,21 @@ ${text}`,
       const r = await api.genText({ messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], project_id: projectId });
       if (r.ok) {
         const txt = (r.data.content || '').trim().replace(/^["']|["']$/g, '');
-        await api.updateStoryboard(s.id, kind === 'image' ? { image_prompt: txt } : { video_prompt: txt });
+        const saved = await api.updateStoryboard(s.id, kind === 'image' ? { image_prompt: txt } : { video_prompt: txt });
+        // 生成已经扣过一次费了，保存失败必须说出来，不能报「已为 N 个镜头补充」
+        if (!saved.ok) { failed++; toast.err(`第 ${s.shot_number} 镜保存失败：${saved.error || '未知错误'}`); continue; }
+        done++;
+      } else {
+        // 生成失败也要说一声：否则用户只看到「已为 0 个镜头补充」，不知道为什么
+        failed++;
+        toast.err(`第 ${s.shot_number} 镜生成失败：${r.error || '未知错误'}`);
       }
-      done++;
     }
-    bar.innerHTML = `<div class="note green">${icon('check', 14)} 已为 ${done} 个镜头补充${kind === 'image' ? '图片' : '视频'}提示词</div>`;
-    setTimeout(() => { bar.innerHTML = ''; }, 3500);
+    const label = kind === 'image' ? '图片' : '视频';
+    bar.innerHTML = failed
+      ? `<div class="note orange">${icon('alert', 14)} 成功 ${done} 个，失败 ${failed} 个（失败原因已逐条提示）</div>`
+      : `<div class="note green">${icon('check', 14)} 已为 ${done} 个镜头补充${label}提示词</div>`;
+    setTimeout(() => { bar.innerHTML = ''; }, failed ? 6000 : 3500);
     load();
   }
 

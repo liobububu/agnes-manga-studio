@@ -206,7 +206,8 @@ export default async function images(container, params) {
     });
     bind('fav', async (id) => {
       const img = items.find((x) => x.id === id);
-      await api.updateImage(id, { is_favorited: !img.is_favorited });
+      const r = await api.updateImage(id, { is_favorited: !img.is_favorited });
+      if (!r.ok) toast.err(r.error || '收藏失败');
       load();
     });
     bind('zoom', (id) => zoom(items.find((x) => x.id === id)));
