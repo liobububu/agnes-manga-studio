@@ -490,8 +490,16 @@ export default async function settings(container, params = {}) {
           try {
             const data = JSON.parse(await f.text());
             const r = await api.importData(data, root.querySelector('#imp-mode').value);
-            if (r.ok) { toast.ok(`已导入 ${r.data.imported} 条数据`); close(); await refreshState(); }
-            else toast.err(r.error);
+            if (!r.ok) { toast.err(r.error); return; }
+            close();
+            await refreshState();
+            // 有被跳过的行必须说出来：静默丢弃等于数据莫名少了
+            const skipped = Array.isArray(r.data.skipped) ? r.data.skipped : [];
+            if (skipped.length) {
+              toast.warn(`已导入 ${r.data.imported} 条，另有 ${skipped.length} 行数据不合法已跳过：${skipped.slice(0, 3).join('；')}${skipped.length > 3 ? ' …' : ''}`, 12000);
+            } else {
+              toast.ok(`已导入 ${r.data.imported} 条数据`);
+            }
           } catch (e) { toast.err(`文件解析失败：${e.message}`); }
         };
       },

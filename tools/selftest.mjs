@@ -116,13 +116,33 @@ group('导入导出');
   const copy = JSON.parse(JSON.stringify(all.collections));
   copy.projects = copy.projects.map((p) => ({ ...p, id: `${p.id}_copy` }));
   const before = store.count('projects');
-  const n = store.importAll({ collections: copy }, 'merge');
-  ok('合并导入有新增', n > 0);
+  const r1 = store.importAll({ collections: copy }, 'merge');
+  ok('合并导入有新增', r1.added > 0);
   ok('合并后条数增加', store.count('projects') > before);
+  eq('合法数据没有跳过项', r1.skipped.length, 0);
 
-  const n2 = store.importAll({ collections: { projects: [{ id: 'only-one', name: '替换测试' }] } }, 'replace');
-  ok('替换导入返回条数', n2 >= 1);
+  const r2 = store.importAll({ collections: { projects: [{ id: 'only-one', name: '替换测试' }] } }, 'replace');
+  ok('替换导入返回条数', r2.added >= 1);
   eq('替换后只剩一条', store.count('projects'), 1);
+
+  // 没有 id / 不是对象 / 重复 id 的行不能被塞进库——
+  // 所有接口按 id 定位，这种行进去以后改不了也删不掉，会一直卡在那儿
+  const r3 = store.importAll({
+    collections: {
+      projects: [
+        { name: '没有 id' },
+        'just a string',
+        null,
+        { id: 'dup', name: '第一次' },
+        { id: 'dup', name: '第二次' },
+      ],
+    },
+  }, 'replace');
+  eq('不合法的行全部跳过', r3.skipped.length, 4);
+  eq('只留下有 id 的那条', store.count('projects'), 1);
+  eq('留下的是第一条', store.list('projects')[0].name, '第一次');
+  ok('跳过原因可读', r3.skipped.some((s) => /缺少 id/.test(s)) && r3.skipped.some((s) => /重复 id/.test(s)),
+    JSON.stringify(r3.skipped));
 }
 
 // ── 4. 统计 ──────────────────────────────────────────────────
