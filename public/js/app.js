@@ -39,9 +39,40 @@ export const state = {
   home: '',
   version: '',
   current: 'dashboard',
+  bootstrapError: '',
+  activeProjectId: '',
 };
 
 let cleanup = null;
+
+const ACTIVE_PROJECT_KEY = 'agnes-studio.active-project';
+
+export function setActiveProject(projectId) {
+  const id = String(projectId || '');
+  state.activeProjectId = id;
+  try {
+    if (id) localStorage.setItem(ACTIVE_PROJECT_KEY, id);
+    else localStorage.removeItem(ACTIVE_PROJECT_KEY);
+  } catch { /* localStorage unavailable: keep in-memory state */ }
+}
+
+export function resolveProjectId(explicit = '') {
+  if (explicit && state.projects.some((p) => p.id === explicit)) {
+    setActiveProject(explicit);
+    return explicit;
+  }
+  const active = state.activeProjectId;
+  if (active && state.projects.some((p) => p.id === active)) return active;
+  let saved = '';
+  try { saved = localStorage.getItem(ACTIVE_PROJECT_KEY) || ''; } catch { /* ignore */ }
+  if (saved && state.projects.some((p) => p.id === saved)) {
+    state.activeProjectId = saved;
+    return saved;
+  }
+  const fallback = state.projects[0]?.id || '';
+  if (fallback) setActiveProject(fallback);
+  return fallback;
+}
 
 // ── 路由 ────────────────────────────────────────────────────
 function parseHash() {
@@ -52,7 +83,14 @@ function parseHash() {
 }
 
 export function navigate(path, params = {}) {
-  const qs = new URLSearchParams(params).toString();
+  const next = { ...params };
+  const projectPages = new Set(['scripts', 'storyboards', 'images', 'videos', 'tasks', 'assets', 'editor']);
+  if (projectPages.has(path) && next.project === undefined) {
+    const active = resolveProjectId();
+    if (active) next.project = active;
+  }
+  if (next.project && next.project !== '__all__') setActiveProject(next.project);
+  const qs = new URLSearchParams(next).toString();
   location.hash = `#/${path}${qs ? `?${qs}` : ''}`;
 }
 
@@ -113,6 +151,7 @@ function renderSidebar() {
 export async function refreshState() {
   const r = await api.bootstrap();
   if (r.ok) {
+    state.bootstrapError = '';
     state.settings = r.data.settings || {};
     state.projects = r.data.projects || [];
     state.stats = r.data.stats || {};
@@ -124,7 +163,10 @@ export async function refreshState() {
     if (ih.ok) state.imageHost = ih.data;
     renderSidebar();
     showLoadIssues();
+  } else {
+    state.bootstrapError = r.error || '无法读取本机工作台数据';
   }
+  return r;
 }
 
 /**
@@ -197,11 +239,6 @@ async function boot() {
   await render();
   connectSSE();
 
-  if (!state.settings.agnes_api_key) {
-    setTimeout(() => {
-      toast.warn('还没有配置 Agnes API Key，去「设置」填一个就能开始生成了。', 8000);
-    }, 700);
-  }
 }
 
 boot();

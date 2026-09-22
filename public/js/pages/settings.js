@@ -12,6 +12,7 @@ const SECTIONS = [
   { id: 'api', label: 'Agnes API', icon: 'key' },
   { id: 'model', label: '模型配置', icon: 'cpu' },
   { id: 'host', label: '图床', icon: 'cloud' },
+  { id: 'tts', label: '配音服务', icon: 'play' },
   { id: 'task', label: '任务配置', icon: 'layers' },
   { id: 'templates', label: '提示词模板', icon: 'template' },
   { id: 'data', label: '数据管理', icon: 'database' },
@@ -68,10 +69,14 @@ export default async function settings(container, params = {}) {
     });
     const p = container.querySelector('#panel');
     p.innerHTML = ({
-      api: renderApi, model: renderModel, host: renderHost, task: renderTask,
+      api: renderApi, model: renderModel, host: renderHost, tts: renderTts, task: renderTask,
       templates: renderTemplates, data: renderData, about: renderAbout,
     })[section]();
     bindPanel(p);
+  }
+
+  function renderTts() {
+    return `<div class="card"><div class="card-title">配音服务</div><div class="note" style="margin-bottom:14px">配音与 Agnes 图片/视频 API 解耦。当前可保持“手动/外部生成”，后续接 IndexTTS2、RunningHub 或其他 TTS 时只需要增加 Provider。</div><div class="field"><label>Provider</label><select class="select" id="tts-provider"><option value="manual"${settings.tts_provider === 'manual' ? ' selected' : ''}>手动 / 外部生成</option><option value="openai_compatible"${settings.tts_provider === 'openai_compatible' ? ' selected' : ''}>OpenAI 兼容 TTS API</option></select></div><div class="field"><label>TTS API Base URL</label><input class="input mono" id="tts-base" value="${esc(settings.tts_api_base_url || '')}" placeholder="例如 http://127.0.0.1:8000/v1" /></div><div class="field"><label>模型</label><input class="input mono" id="tts-model" value="${esc(settings.tts_model || '')}" placeholder="由所选 Provider 决定" /></div><button class="btn btn-primary" id="save-tts">保存配音配置</button></div>`;
   }
 
   // ── API ───────────────────────────────────────────────────
@@ -301,6 +306,9 @@ export default async function settings(container, params = {}) {
   }
 
   function bindPanel(p) {
+    if (section === 'tts') {
+      p.querySelector('#save-tts').onclick = () => save({ tts_provider: p.querySelector('#tts-provider').value, tts_api_base_url: p.querySelector('#tts-base').value.trim(), tts_model: p.querySelector('#tts-model').value.trim() }, '配音配置已保存');
+    }
     if (section === 'api') {
       const keyInput = p.querySelector('#s-key');
       p.querySelector('#toggle-key').onclick = () => {

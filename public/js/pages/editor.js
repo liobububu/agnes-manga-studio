@@ -1,17 +1,14 @@
 /**
  * editor.js — 剪辑台
  * 把本集已经生成好的片段按分镜顺序攒成一条时间线：排序、剔除、设入出点、加转场，
- * 然后导出交接清单，交给 OpenReel（浏览器版剪辑器，MIT）继续精剪。
- *
- * 这里刻意**不生成 OpenReel 工程文件**：它的 MediaItem 里带 fileHandle / blob，
- * 两者都无法序列化成 JSON，外部生成的工程打开后仍然要逐个重新关联媒体。
- * 与其给一个「看起来能用」其实打不开的文件，不如给真实的片段 + 顺序说明。
+ * 然后交给 OpenReel Desktop 继续精剪。
+ * 集成采用 Bridge Manifest：Agnes 输出稳定的媒体、时间线和转场数据，Desktop 端建立自己的媒体句柄。
  */
 import { icon, esc } from '../consts.js';
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm } from '../ui.js';
 import { head, projectPicker, episodeOptions } from './helpers.js';
-import { state } from '../app.js';
+import { state, onEvent, resolveProjectId, setActiveProject } from '../app.js';
 
 const TRANSITIONS = [
   { value: 'none', label: '无' },
@@ -22,7 +19,7 @@ const TRANSITIONS = [
 ];
 
 export default async function editor(container, params) {
-  let projectId = params.project || (state.projects[0] && state.projects[0].id) || '';
+  let projectId = resolveProjectId(params.project || '');
   let episode = Number(params.episode || 1);
   let clips = [];
   let transitions = [];
@@ -33,13 +30,14 @@ export default async function editor(container, params) {
   container.innerHTML = `
     ${head({
       title: '剪辑台',
-      desc: '按分镜顺序把生成好的片段攒成一条时间线，导出后交给 OpenReel 精剪',
+      desc: 'AI 出片在 Agnes 完成，需要精剪时直接打开 OpenReel',
       actions: `
         ${projectPicker(state.projects, projectId, { id: 'p-picker' })}
         <select class="select select-sm" id="ep" style="width:96px"></select>
         <button class="btn btn-sm" id="assemble">${icon('refresh', 13)}按分镜汇总</button>
         <button class="btn btn-sm" id="save">${icon('save', 13)}保存方案</button>
-        <button class="btn btn-primary btn-sm" id="export">${icon('arrowRight', 13)}导出交接清单</button>`,
+        <button class="btn btn-sm" id="export">${icon('download', 13)}导出交接清单</button>
+        <button class="btn btn-primary btn-sm" id="openreel">${icon('arrowRight', 13)}打开 OpenReel</button>`,
     })}
     <div id="bar" style="margin-bottom:14px"></div>
     <div class="card" id="timeline">${spinner()}</div>
@@ -48,12 +46,35 @@ export default async function editor(container, params) {
   const epSel = container.querySelector('#ep');
   epSel.innerHTML = episodeOptions(episode);
 
-  container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value; planId = ''; load(); };
+  container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value; setActiveProject(projectId); planId = ''; load(); };
   epSel.onchange = () => { episode = Number(epSel.value); planId = ''; load(); };
   container.querySelector('#assemble').onclick = assemble;
   container.querySelector('#save').onclick = save;
   // 必须包一层：直接把 doExport 挂上去的话，点击事件对象会当成 srtMode 传进去
   container.querySelector('#export').onclick = () => doExport();
+  container.querySelector('#openreel').onclick = openInOpenReel;
+
+  // 异步视频可能在用户停留剪辑台期间完成。自动汇总，但不覆盖用户已经手工调整过的时间线。
+  let refreshTimer = null;
+  const scheduleLiveRefresh = () => {
+    if (dirty || !projectId) return;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(async () => {
+      const r = await api.assembleEditPlan(projectId, episode);
+      if (!r.ok || dirty) return;
+      clips = r.data.clips || [];
+      transitions = [];
+      render();
+    }, 250);
+  };
+  const offVideo = onEvent('video', (v) => {
+    if (!v || v.project_id !== projectId || v.status !== 'completed') return;
+    scheduleLiveRefresh();
+  });
+  const offStoryboard = onEvent('storyboard', (sb) => {
+    if (!sb || sb.project_id !== projectId || Number(sb.episode_number || 0) !== episode) return;
+    scheduleLiveRefresh();
+  });
 
   async function load() {
     const el = container.querySelector('#timeline');
@@ -74,8 +95,10 @@ export default async function editor(container, params) {
     } else {
       planId = '';
       planName = `第 ${episode} 集剪辑方案`;
-      clips = [];
       transitions = [];
+      const assembled = await api.assembleEditPlan(projectId, episode);
+      clips = assembled.ok ? (assembled.data.clips || []) : [];
+      dirty = false;
     }
     render();
     renderPlans(r.data || []);
@@ -90,10 +113,13 @@ export default async function editor(container, params) {
     dirty = true;
     render();
     const s = r.data.stats;
-    if (s.missing > 0) {
-      toast.warn(`${s.total} 个镜头里有 ${s.missing} 个还没生成视频，已标记出来`, 8000);
+    if (s.missing > 0 || s.audio_missing > 0) {
+      const parts = [];
+      if (s.missing > 0) parts.push(`${s.missing} 个缺视频`);
+      if (s.audio_missing > 0) parts.push(`${s.audio_missing} 个有台词/旁白但缺音频`);
+      toast.warn(`${s.total} 个镜头：${parts.join('，')}，已在时间线标记`, 8000);
     } else {
-      toast.ok(`已汇总 ${s.ready} 个片段`);
+      toast.ok(`已汇总 ${s.ready} 个片段，音视频素材完整`);
     }
   }
 
@@ -130,6 +156,7 @@ export default async function editor(container, params) {
             <span style="font-family:var(--mono);color:var(--text-3);width:34px">#${esc(c.shot_number)}</span>
             <div style="flex:1;min-width:0">
               <div style="font-size:13px">${esc(c.name || '未命名镜头')}</div>
+              <div style="font-size:11px;margin-top:2px;color:${c.audio_missing ? 'var(--warn)' : ((c.dialogue_audio || c.narration_audio || c.audio_id) ? 'var(--ok)' : 'var(--text-4)')}">${c.audio_missing ? '音频不完整' : ((c.dialogue_audio || c.narration_audio || c.audio_id) ? `${c.dialogue_audio ? '台词音频' : ''}${c.dialogue_audio && c.narration_audio ? ' + ' : ''}${c.narration_audio ? '旁白音频' : ''}${!c.dialogue_audio && !c.narration_audio ? '配音已关联' : ''}` : '无台词/旁白')}</div>
               <div style="font-size:11px;color:var(--text-4);margin-top:2px">
                 ${c.missing ? '<span style="color:var(--warn)">还没生成视频</span>'
                   : `入 ${c.trim_in}s → 出 ${c.trim_out}s（${dur.toFixed(1)}s / 全 ${Number(c.duration).toFixed(1)}s）`}
@@ -248,6 +275,40 @@ export default async function editor(container, params) {
     });
   }
 
+  async function nextEpisodeTarget() {
+    const r = await api.storyboards(projectId);
+    if (!r.ok) return null;
+    const all = r.data || [];
+    const eps = [...new Set(all.map((s) => Number(s.episode_number) || 1))].sort((a, b) => a - b);
+    const next = eps.find((ep) => ep > episode);
+    if (!next) {
+      const scripts = await api.scripts(projectId);
+      const outlines = scripts.ok ? (scripts.data || []).filter((s) => s.script_type === 'episode_outline').sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [];
+      let plannedNext = null;
+      for (const outline of outlines) {
+        try {
+          const text = String(outline.content || '');
+          const m = text.match(/\[[\s\S]*\]/);
+          const arr = JSON.parse(m ? m[0] : text);
+          if (!Array.isArray(arr)) continue;
+          const eps = arr.map((x, i) => Number(x?.episode ?? x?.episode_number ?? i + 1)).filter((n) => n > episode).sort((a, b) => a - b);
+          if (eps.length) { plannedNext = eps[0]; break; }
+        } catch {}
+      }
+      const target = plannedNext || episode + 1;
+      return { page: 'scripts', params: { project: projectId, tab: 'episode_script', episode: String(target) }, label: `第 ${target} 集剧本` };
+    }
+    const shots = all.filter((s) => (Number(s.episode_number) || 1) === next);
+    const imagesDone = shots.length > 0 && shots.every((s) => Boolean(s.linked_image_id));
+    const videosDone = shots.length > 0 && shots.every((s) => Boolean(s.linked_video_id) || s.status === 'video_ready' || s.status === 'done');
+    const plans = await api.editPlans(projectId, next);
+    const hasPlan = plans.ok && (plans.data || []).length > 0;
+    if (!shots.length) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集分镜` };
+    if (!imagesDone) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集补齐分镜图` };
+    if (!videosDone) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集补齐视频` };
+    return { page: 'editor', params: { project: projectId, episode: String(next) }, label: hasPlan ? `第 ${next} 集继续剪辑` : `第 ${next} 集剪辑` };
+  }
+
   async function save() {
     if (!projectId) { toast.err('先选一个项目'); return; }
     if (!clips.length) { toast.err('还没有片段，先「按分镜汇总」'); return; }
@@ -262,9 +323,25 @@ export default async function editor(container, params) {
     if (!r.ok) { toast.err(r.error || '保存失败'); return; }
     planId = r.data.id;
     dirty = false;
+    const next = await nextEpisodeTarget();
     toast.ok('方案已保存');
     render();
-    load();
+    await load();
+    if (next) {
+      const actions = container.querySelector('.page-head .actions') || container.querySelector('.page-head');
+      if (actions && !container.querySelector('#next-episode-flow')) {
+        const b = document.createElement('button');
+        b.className = 'btn btn-primary'; b.id = 'next-episode-flow'; b.textContent = '继续：' + next.label;
+        b.onclick = () => { location.hash = '#/' + next.page + '?' + new URLSearchParams(next.params).toString(); };
+        actions.appendChild(b);
+      }
+    }
+  }
+
+  function openInOpenReel() {
+    // 和动画大丸家 3.0 一样保持轻量：本站负责 AI 生产与粗编排，OpenReel 作为独立剪辑器直接打开。
+    // 不再要求 Desktop Bridge、协议注册或 OpenReel 源码改造。
+    window.open('https://openreel.video/', '_blank', 'noopener,noreferrer');
   }
 
   async function doExport(srtMode) {
@@ -283,7 +360,9 @@ export default async function editor(container, params) {
         2. 打开 OpenReel，一次性导入这个文件夹；<br>
         3. 按「顺序」一栏拖成这个排列，转场按清单设置。
       </div>
-      <div class="section-label" style="margin-top:12px">片段顺序</div>
+      <div class="note" style="margin-top:12px">视频轨 ${d.material_stats?.video || 0} 段 · 台词音频 ${d.material_stats?.dialogue_audio || 0} 段 · 旁白音频 ${d.material_stats?.narration_audio || 0} 段${d.material_stats?.missing ? ` · ${d.material_stats.missing} 项素材缺失` : ' · 素材完整'}</div>
+      ${d.missing_materials?.length ? `<div class="section-label" style="margin-top:12px">缺失素材</div><div class="note red">${d.missing_materials.map((x) => `镜头 ${x.shot_number}：${esc(x.message)}`).join('<br>')}</div>` : ''}
+      <div class="section-label" style="margin-top:12px">视频轨</div>
       <div class="table-wrap"><table class="tbl">
         <thead><tr><th>#</th><th>镜头</th><th>入</th><th>出</th><th>时长</th><th>起点</th></tr></thead>
         <tbody>${d.clips.map((c) => `
@@ -291,6 +370,7 @@ export default async function editor(container, params) {
               <td>${c.trim_in}s</td><td>${c.trim_out}s</td>
               <td>${c.duration}s</td><td>${c.start}s</td></tr>`).join('')}
         </tbody></table></div>
+      ${(d.tracks?.dialogue_audio?.length || d.tracks?.narration_audio?.length) ? `<div class="section-label" style="margin-top:12px">音频轨</div><div style="font-size:12px;color:var(--text-3);line-height:1.8">${[...(d.tracks.dialogue_audio || []).map((a) => ({ ...a, label: '台词' })), ...(d.tracks.narration_audio || []).map((a) => ({ ...a, label: '旁白' }))].sort((a, b) => a.shot_number - b.shot_number).map((a) => `镜头 ${a.shot_number} · ${a.label} · ${a.start}s · ${esc(a.source)}`).join('<br>')}</div>` : ''}
       ${d.transitions.length ? `
         <div class="section-label" style="margin-top:12px">转场</div>
         <div style="font-size:12px;color:var(--text-3)">
@@ -350,5 +430,6 @@ export default async function editor(container, params) {
     });
   }
 
+  container.addEventListener('DOMNodeRemovedFromDocument', () => { clearTimeout(refreshTimer); offVideo?.(); offStoryboard?.(); }, { once: true });
   await load();
 }

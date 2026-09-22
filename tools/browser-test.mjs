@@ -4,8 +4,9 @@
  * 以及控制台错误 / unhandledrejection 为零。
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -16,9 +17,23 @@ const port = 30000 + (process.pid % 10000);
 const cdpPort = port + 1;
 const stamp = `${process.pid}-${Date.now().toString(36)}`;
 const RUN_ID = `${process.pid.toString(36)}${Date.now().toString(36)}`;
-const home = path.join(ROOT, 'build', 'ui-home-${RUN_ID}');
+const testRoot = path.resolve(process.env.AGNES_STUDIO_TEST_ROOT || os.tmpdir());
+let runRoot = '';
+try {
+  const relative = path.relative(ROOT, testRoot);
+  if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error('不能位于项目目录内，请使用项目外的专用临时目录');
+  }
+  if (!fs.statSync(testRoot).isDirectory()) throw new Error('必须是已存在的目录');
+  fs.accessSync(testRoot, fs.constants.W_OK);
+  runRoot = fs.mkdtempSync(path.join(testRoot, `agnes-browser-${RUN_ID}-`));
+} catch (error) {
+  console.error(`测试目录不可用：${testRoot}（${error.message}；请创建项目外的可写目录）`);
+  process.exit(1);
+}
+const home = path.join(runRoot, `ui-home-${RUN_ID}`);
 fs.mkdirSync(home, { recursive: true });
-const profile = path.join(ROOT, 'build', 'ui-profile-${RUN_ID}');
+const profile = path.join(runRoot, `ui-profile-${RUN_ID}`);
 fs.mkdirSync(profile, { recursive: true });
 
 let pass = 0, fail = 0;
@@ -344,12 +359,12 @@ try {
   if (cdp) cdp.close();
   if (browser?.pid) {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
+      spawnSync('taskkill', ['/PID', String(browser.pid), '/T', '/F'], { stdio: 'ignore' });
     } else browser.kill('SIGTERM');
   }
   if (server?.pid) {
     if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
+      spawnSync('taskkill', ['/PID', String(server.pid), '/T', '/F'], { stdio: 'ignore' });
     } else server.kill('SIGTERM');
   }
 }
@@ -358,7 +373,6 @@ console.log(`\n__RESULT__ pass=${pass} fail=${fail}`);
 if (failures.length) failures.forEach((x) => console.log(`  ✗ ${x}`));
 // 全绿才回收现场；有失败则留下排查（用独立目录名是为了不读到上一轮的密钥）
 if (!fail) {
-  try { fs.rmSync(home, { recursive: true, force: true }); } catch { /* 清不掉不影响结果 */ }
-  try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 清不掉不影响结果 */ }
+  fs.rmSync(runRoot, { recursive: true, force: true });
 }
 process.exitCode = fail ? 1 : 0;

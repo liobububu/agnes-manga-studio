@@ -7,7 +7,7 @@ import { icon, esc, relTime, extractJson, copyText, SCRIPT_TYPES, modelChoices }
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, options, confirm } from '../ui.js';
 import { head, projectPicker } from './helpers.js';
-import { state, softRefresh } from '../app.js';
+import { state, softRefresh, resolveProjectId, setActiveProject } from '../app.js';
 
 const TAB_TPL = {
   story_concept: 'story_concept',
@@ -19,7 +19,8 @@ const TAB_TPL = {
 
 export default async function scripts(container, params) {
   let tab = params.tab && TAB_TPL[params.tab] ? params.tab : 'story_concept';
-  let projectId = params.project || (state.projects[0] && state.projects[0].id) || '';
+  let projectId = resolveProjectId(params.project || '');
+  const targetEpisode = Math.max(1, Number(params.episode || 1));
   let templates = [];
   let result = '';
   let generating = false;
@@ -60,7 +61,7 @@ export default async function scripts(container, params) {
     </div>`;
 
   const picker = container.querySelector('#p-picker');
-  picker.onchange = () => { projectId = picker.value; loadSaved(); };
+  picker.onchange = () => { projectId = picker.value; setActiveProject(projectId); loadSaved(); };
   container.querySelector('#reload').onclick = () => { loadTemplates(); loadSaved(); };
   container.querySelector('#tabs').querySelectorAll('[data-tab]').forEach((b) => {
     b.onclick = () => { tab = b.getAttribute('data-tab'); syncTabs(); renderFields(); };
@@ -111,12 +112,43 @@ export default async function scripts(container, params) {
     box.querySelectorAll('[data-var]').forEach((el) => {
       el.oninput = () => fields.set(el.getAttribute('data-var'), el.value);
     });
+    if (tab === 'episode_script') {
+      box.querySelectorAll('[data-var]').forEach((el) => {
+        const key = el.getAttribute('data-var') || '';
+        if (/集数|第几集|episode/i.test(key) && !el.value) {
+          el.value = String(targetEpisode);
+          fields.set(key, el.value);
+        }
+      });
+    }
 
     // 模型下拉
     const ms = container.querySelector('#model');
     const models = modelChoices(state.models, 'text', [state.settings.default_text_model || 'agnes-2.0-flash', 'agnes-2.0-pro', 'agnes-2.0-flash']);
     const current = ms.value || models[0]?.value;
     ms.innerHTML = options(models, 'value', 'label', current);
+  }
+
+  function outlineEpisode(content, ep) {
+    const parsed = extractJson(content || '');
+    if (!Array.isArray(parsed)) return null;
+    return parsed.find((x, i) => Number(x?.episode ?? x?.episode_number ?? i + 1) === Number(ep)) || null;
+  }
+
+  async function preloadEpisodeOutline() {
+    if (tab !== 'episode_script' || !projectId) return;
+    const r = await api.scripts(projectId);
+    if (!r.ok) return;
+    const outlines = (r.data || []).filter((s) => s.script_type === 'episode_outline').sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    for (const outline of outlines) {
+      const item = outlineEpisode(outline.content, targetEpisode);
+      if (!item) continue;
+      const text = JSON.stringify(item, null, 2);
+      fields.set('本集大纲', text);
+      const input = container.querySelector('[data-var="本集大纲"]');
+      if (input && !input.value.trim()) input.value = text;
+      return;
+    }
   }
 
   async function generate() {
@@ -196,7 +228,8 @@ export default async function scripts(container, params) {
       const r = await api.createScript({
         project_id: projectId,
         script_type: tab,
-        title: `${SCRIPT_TYPES.find((t) => t.value === tab)?.label || '脚本'} - ${new Date().toLocaleDateString('zh-CN')}`,
+        episode_number: tab === 'episode_script' || tab === 'storyboard_script' ? targetEpisode : null,
+        title: `${tab === 'episode_script' ? `第 ${targetEpisode} 集单集脚本` : (SCRIPT_TYPES.find((t) => t.value === tab)?.label || '脚本')} - ${new Date().toLocaleDateString('zh-CN')}`,
         content: result,
         model_name: container.querySelector('#model')?.value || '',
         generation_prompt: '',
@@ -205,7 +238,12 @@ export default async function scripts(container, params) {
       else toast.err(r.error);
     };
     const sbBtn = wrap.querySelector('#r-storyboard');
-    if (sbBtn) sbBtn.onclick = () => importStoryboard(parsed);
+    if (sbBtn) sbBtn.onclick = async () => {
+      if (!projectId) { toast.err('请先选择项目'); return; }
+      const saved = await api.createScript({ project_id: projectId, script_type: tab, episode_number: tab === 'episode_script' || tab === 'storyboard_script' ? targetEpisode : null, title: `${tab === 'episode_script' ? `第 ${targetEpisode} 集单集脚本` : (SCRIPT_TYPES.find((t) => t.value === tab)?.label || '脚本')} - ${new Date().toLocaleDateString('zh-CN')}`, content: result, model_name: container.querySelector('#model')?.value || '', generation_prompt: '' });
+      if (!saved.ok) { toast.err('保存脚本失败：' + (saved.error || '未知错误')); return; }
+      location.hash = `#/storyboards?project=${encodeURIComponent(projectId)}&episode=${targetEpisode}&source_script=${encodeURIComponent(saved.data.id)}`;
+    };
 
     // 优化按钮：用 optimize 类型模板
     const opts = templates.filter((t) => t.template_type === 'optimize');
@@ -336,5 +374,6 @@ export default async function scripts(container, params) {
   }
 
   await loadTemplates();
+  await preloadEpisodeOutline();
   await loadSaved();
 }

@@ -6,15 +6,16 @@ import { icon, esc, relTime, fmtTime, projectStatusBadge } from '../consts.js';
 import { api } from '../api.js';
 import { empty, spinner, toast } from '../ui.js';
 import { head } from './helpers.js';
-import { state, navigate } from '../app.js';
+import { state, navigate, refreshState } from '../app.js';
 
 export default async function dashboard(container) {
+  const needsKey = !state.settings.agnes_api_key;
   container.innerHTML = `
     ${head({
       title: '工作台',
       desc: '项目创建 → 脚本生成 → 分镜 → 分镜图 → 图生视频 → 素材入库，一条链路走完',
       actions: `
-        <button class="btn btn-primary" id="q-new-project">${icon('plus', 16)}新建项目</button>
+        <button class="btn ${needsKey ? '' : 'btn-primary'}" id="q-new-project">${icon('plus', 16)}新建项目</button>
         <button class="btn" id="q-refresh">${icon('refresh', 16)}刷新</button>`,
     })}
     <div class="hero">
@@ -62,24 +63,65 @@ export default async function dashboard(container) {
   });
 
   async function load() {
-    const [st, pr, im, vd] = await Promise.all([
-      api.stats(), api.projects(), api.images(), api.videos(),
+    const [st, pr, im, vd, sc, sb] = await Promise.all([
+      api.stats(), api.projects(), api.images(), api.videos(), api.scripts(), api.storyboards(),
     ]);
 
-    const alerts = [];
-    if (!state.settings.agnes_api_key) {
-      alerts.push(`<div class="note orange"><span>${icon('key', 14)}还没有配置 Agnes API Key。配置后才能生成脚本、图片和视频。</span><button class="btn btn-xs" id="go-api">去设置</button></div>`);
-    } else if (!state.models?.models?.length) {
-      alerts.push(`<div class="note gold"><span>${icon('cpu', 14)}还没有模型目录。先拉取 Agnes 当前模型，避免使用过期模型名。</span><button class="btn btn-xs" id="go-model">拉取模型</button></div>`);
-    }
-    if (state.settings.agnes_api_key && !state.imageHost?.configured) {
-      alerts.push(`<div class="note" style="margin-top:8px"><span>${icon('cloud', 14)}图生视频需要公网图片。配置图床后，本机生成的分镜图会自动上传，不再降级为文生视频。</span><button class="btn btn-xs" id="go-host">配置图床</button></div>`);
-    }
     const alertEl = container.querySelector('#setup-alert');
-    alertEl.innerHTML = alerts.join('');
-    alertEl.querySelector('#go-api')?.addEventListener('click', () => navigate('settings'));
-    alertEl.querySelector('#go-model')?.addEventListener('click', () => navigate('settings', { section: 'model' }));
+    const projects = pr.ok ? pr.data || [] : [];
+    const scripts = sc.ok ? sc.data || [] : [];
+    const storyboards = sb.ok ? sb.data || [] : [];
+    const project = projects[0];
+    let alert = '';
+    let next = null;
+
+    if (state.bootstrapError) {
+      alert = `<div class="note red"><span>${icon('alert', 14)}无法加载本机工作台数据：${esc(state.bootstrapError)}</span><button class="btn btn-xs" id="retry-bootstrap">重试</button></div>`;
+    } else if (!state.settings.agnes_api_key) {
+      alert = `<div class="note orange"><span>${icon('key', 14)}还没有配置 Agnes API Key。先完成配置，之后才能生成脚本、图片和视频。</span><button class="btn btn-primary btn-xs" id="onboarding-next">配置 API Key</button></div>`;
+      next = () => navigate('settings');
+    } else if (!projects.length) {
+      alert = `<div class="note gold"><span>${icon('folder', 14)}下一步：创建第一部漫剧项目，后续的脚本和分镜都会保存在项目中。</span></div>`;
+    } else if (!scripts.some((s) => s.project_id === project.id)) {
+      alert = `<div class="note gold"><span>${icon('script', 14)}「${esc(project.name)}」还没有故事脚本。先完成故事脚本，再生成分镜更连贯。</span><button class="btn btn-primary btn-xs" id="onboarding-next">开始写脚本</button></div>`;
+      next = () => navigate('scripts', { project: project.id });
+    } else if (!storyboards.some((s) => s.project_id === project.id)) {
+      alert = `<div class="note gold"><span>${icon('film', 14)}「${esc(project.name)}」还没有分镜。把已保存脚本转换成镜头表后，就能批量出图。</span><button class="btn btn-primary btn-xs" id="onboarding-next">制作分镜</button></div>`;
+      next = () => navigate('storyboards', { project: project.id, episode: '1' });
+    } else if (!im.ok || !im.data.some((i) => i.project_id === project.id)) {
+      alert = `<div class="note gold"><span>${icon('image', 14)}「${esc(project.name)}」已有分镜，下一步是生成分镜图。</span><button class="btn btn-primary btn-xs" id="onboarding-next">生成分镜图</button></div>`;
+      next = () => navigate('images', { project: project.id });
+    } else if (!state.imageHost?.configured) {
+      alert = `<div class="note"><span>${icon('cloud', 14)}需要图生视频时，配置图床可让本机分镜图自动上传并避免降级为文生视频。</span><button class="btn btn-xs" id="go-host">配置图床</button></div>`;
+    }
+
+    alertEl.innerHTML = alert;
+    alertEl.querySelector('#onboarding-next')?.addEventListener('click', next);
     alertEl.querySelector('#go-host')?.addEventListener('click', () => navigate('settings', { section: 'host' }));
+    alertEl.querySelector('#retry-bootstrap')?.addEventListener('click', async (event) => {
+      event.currentTarget.disabled = true;
+      event.currentTarget.textContent = '正在重试…';
+      await refreshState();
+      await load();
+    });
+
+    /*
+     * The model catalogue is useful only after the single creation-path action
+     * above has been resolved. Keep it as supporting setup feedback rather than
+     * competing with the next action.
+     */
+    if (!alert && !state.models?.models?.length) {
+      alertEl.innerHTML = `<div class="note gold"><span>${icon('cpu', 14)}还没有模型目录。先拉取 Agnes 当前模型，避免使用过期模型名。</span><button class="btn btn-xs" id="go-model">拉取模型</button></div>`;
+      alertEl.querySelector('#go-model')?.addEventListener('click', () => navigate('settings', { section: 'model' }));
+    }
+    /*
+     * Kept in the same dashboard load so setup feedback is derived from current
+     * server data, never from a persisted client-side onboarding flag.
+     */
+    if (false) {
+      // Placeholder prevents accidental reintroduction of parallel setup alerts.
+      // eslint-disable-next-line no-empty
+    }
 
     if (st.ok) {
       const s = st.data;

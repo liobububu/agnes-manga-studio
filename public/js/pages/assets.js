@@ -6,34 +6,63 @@ import { icon, esc, copyText, relTime, IMAGE_USAGES, statusBadge } from '../cons
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm } from '../ui.js';
 import { head, projectPicker } from './helpers.js';
-import { state, navigate } from '../app.js';
+import { state, navigate, resolveProjectId, setActiveProject } from '../app.js';
 
 export default async function assets(container, params) {
   let tab = params.tab || 'image';
-  let projectId = '';
+  let projectId = params.project === '__all__' ? '' : resolveProjectId(params.project || '');
   let favOnly = false;
+  let query = '';
+  let status = '';
   let images = [];
   let videos = [];
   let scripts = [];
+  let entities = [];
 
   container.innerHTML = `
     ${head({
       title: '素材库',
       desc: '生成出来的图片、视频、剧本都在这里，全部存在本机',
       actions: `
-        ${projectPicker(state.projects, '', { id: 'p-picker', allOption: true })}
+        ${projectPicker(state.projects, projectId, { id: 'p-picker', allOption: true })}
+        <button class="btn btn-sm" id="go-images">${icon('image', 13)}生成图片</button>
+        <button class="btn btn-sm" id="go-videos">${icon('video', 13)}生成视频</button>
+        <button class="btn btn-sm" id="go-tasks">${icon('tasks', 13)}任务</button>
         <button class="btn btn-sm" id="fav-only">${icon('star', 13)}只看收藏</button>
         <button class="btn" id="reload">${icon('refresh', 16)}</button>`,
     })}
+    <div class="card" style="padding:12px 14px;margin-bottom:14px">
+      <div class="row" style="gap:10px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <input class="input" id="asset-search" placeholder="搜索名称、提示词、标签、剧本内容…" />
+        </div>
+        <select class="select" id="asset-status" style="width:auto;min-width:140px">
+          <option value="">全部状态</option>
+          <option value="completed">已完成</option>
+          <option value="processing">处理中</option>
+          <option value="pending">等待中</option>
+          <option value="failed">失败</option>
+          <option value="local">已存本机</option>
+          <option value="remote">仅远程</option>
+        </select>
+        <div class="hint" id="asset-count" style="margin-left:auto"></div>
+      </div>
+    </div>
     <div class="tabs" id="tabs" style="margin-bottom:16px">
+      <button data-tab="entity">资产设定</button>
       <button data-tab="image" class="on">图片素材</button>
       <button data-tab="video">视频素材</button>
       <button data-tab="text">文本素材</button>
     </div>
     <div id="grid" class="asset-grid">${spinner()}</div>`;
 
-  container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value === '__all__' ? '' : e.target.value; load(); };
+  container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value === '__all__' ? '' : e.target.value; if (projectId) setActiveProject(projectId); load(); };
   container.querySelector('#reload').onclick = load;
+  container.querySelector('#go-images').onclick = () => navigate('images', projectId ? { project: projectId } : {});
+  container.querySelector('#go-videos').onclick = () => navigate('videos', projectId ? { project: projectId } : {});
+  container.querySelector('#go-tasks').onclick = () => navigate('tasks', projectId ? { project: projectId } : {});
+  container.querySelector('#asset-search').oninput = (e) => { query = e.target.value.trim().toLowerCase(); render(); };
+  container.querySelector('#asset-status').onchange = (e) => { status = e.target.value; render(); };
   container.querySelector('#fav-only').onclick = (e) => {
     favOnly = !favOnly;
     e.currentTarget.classList.toggle('btn-primary', favOnly);
@@ -48,25 +77,58 @@ export default async function assets(container, params) {
   });
 
   async function load() {
-    const [i, v, s] = await Promise.all([api.images(), api.videos(), api.scripts()]);
+    const [i, v, s, e] = await Promise.all([api.images(), api.videos(), api.scripts(), api.assetEntities()]);
     if (i.ok) images = i.data || [];
     if (v.ok) videos = v.data || [];
     if (s.ok) scripts = s.data || [];
+    if (e.ok) entities = e.data || [];
     render();
   }
 
-  function filtered(list) {
+  function filtered(list, kind) {
     return list.filter((x) => {
       if (projectId && x.project_id !== projectId) return false;
       if (favOnly && !x.is_favorited) return false;
+      if (status) {
+        if (status === 'local' && !x.local_file) return false;
+        else if (status === 'remote' && (x.local_file || !(x.remote_url || x.video_url))) return false;
+        else if (!['local', 'remote'].includes(status) && String(x.status || '').toLowerCase() !== status) return false;
+      }
+      if (query) {
+        const hay = kind === 'text'
+          ? [x.title, x.content, x.script_type, x.model_name]
+          : [x.name, x.generation_prompt, x.video_prompt, x.usage_type, x.model_name, x.notes, ...(Array.isArray(x.tags) ? x.tags : [])];
+        if (!hay.some((v) => String(v || '').toLowerCase().includes(query))) return false;
+      }
       return true;
     });
   }
 
+  function projectName(id) {
+    return state.projects.find((p) => p.id === id)?.name || '未归属项目';
+  }
+
+  function setCount(n, total) {
+    const el = container.querySelector('#asset-count');
+    if (el) el.textContent = n === total ? `共 ${total} 条` : `显示 ${n} / ${total} 条`;
+  }
+
   function render() {
     const el = container.querySelector('#grid');
+    if (tab === 'entity') {
+      const labels = { character: '角色', scene: '场景', prop: '道具', reference: '参考' };
+      const list = entities.filter((x) => (!projectId || x.project_id === projectId) && (!query || [x.name, x.description, x.prompt, ...(x.tags || [])].some((v) => String(v || '').toLowerCase().includes(query))));
+      setCount(list.length, entities.length);
+      el.innerHTML = `<div class="card" style="grid-column:1/-1;padding:14px"><div class="row"><div style="flex:1"><b>项目资产设定</b><div class="hint">角色、场景、道具成为可复用资产，可在分镜和生成提示词里直接输入 @名称 调用。</div></div><button class="btn btn-primary" id="add-entity">+ 新建资产</button></div></div>` + (list.length ? list.map((a) => `<div class="card" data-eid="${esc(a.id)}" style="aspect-ratio:auto"><div class="row"><span class="badge">${esc(labels[a.asset_type] || '资产')}</span><b style="flex:1">@${esc(a.name)}</b><button class="btn btn-sm" data-bind="${esc(a.id)}">${a.image_id ? '更换主参考图' : '绑定主参考图'}</button><button class="icon-btn danger" data-de="${esc(a.id)}">${icon('trash',13)}</button></div>${a.image_id ? `<div class="hint" style="margin-top:6px;color:var(--gold-light)">已绑定主参考图</div>` : ''}<div class="hint" style="margin-top:8px">${esc(a.description || a.prompt || '暂无描述')}</div></div>`).join('') : `<div class="card" style="grid-column:1/-1">${empty('还没有资产设定','先建立角色、场景和道具，后续分镜直接 @名称 调用','folder')}</div>`);
+      const add = el.querySelector('#add-entity');
+      if (add) add.onclick = () => modal({ title:'新建资产', wide:true, body:`<div class="form-grid"><div class="field"><label>类型</label><select class="select" id="ae-type"><option value="character">角色</option><option value="scene">场景</option><option value="prop">道具</option><option value="reference">参考</option></select></div><div class="field"><label>名称</label><input class="input" id="ae-name" placeholder="例如：孙悟空" /></div></div><div class="field"><label>资产描述</label><textarea class="textarea" id="ae-desc" rows="5" placeholder="固定外观、服装、材质、环境等一致性描述"></textarea></div><div class="field"><label>生成提示词</label><textarea class="textarea" id="ae-prompt" rows="5"></textarea></div>`, footer:'<button class="btn" data-no>取消</button><button class="btn btn-primary" data-yes>保存资产</button>', onMount(root,close){root.querySelector('[data-no]').onclick=close;root.querySelector('[data-yes]').onclick=async()=>{const rr=await api.createAssetEntity({project_id:projectId||null,asset_type:root.querySelector('#ae-type').value,name:root.querySelector('#ae-name').value,description:root.querySelector('#ae-desc').value,prompt:root.querySelector('#ae-prompt').value});if(rr.ok){toast.ok('资产已保存');close();load();}else toast.err(rr.error);};} });
+      el.querySelectorAll('[data-bind]').forEach((b)=>b.onclick=()=>{const a=entities.find((x)=>x.id===b.dataset.bind);const imgs=images.filter((i)=>!projectId||i.project_id===projectId);if(!imgs.length){toast.warn('当前项目还没有图片素材，请先生成或导入参考图');return;}modal({title:`为 @${a.name} 绑定主参考图`,body:`<div class="field"><label>主参考图</label><select class="select" id="bind-img">${imgs.map((i)=>`<option value="${esc(i.id)}" ${i.id===a.image_id?'selected':''}>${esc(i.name||'未命名图片')}</option>`).join('')}</select></div><div class="hint">后续分镜使用 @${esc(a.name)} 时，系统可以继续继承这张参考图。</div>`,footer:'<button class="btn" data-no>取消</button><button class="btn btn-primary" data-yes>绑定</button>',onMount(root,close){root.querySelector('[data-no]').onclick=close;root.querySelector('[data-yes]').onclick=async()=>{const rr=await api.updateAssetEntity(a.id,{image_id:root.querySelector('#bind-img').value});if(rr.ok){toast.ok('主参考图已绑定');close();load();}else toast.err(rr.error);};}});});
+      el.querySelectorAll('[data-de]').forEach((b)=>b.onclick=async()=>{if(!(await confirm({text:'删除这个资产设定？',danger:true,okText:'删除'})))return;const rr=await api.deleteAssetEntity(b.dataset.de);if(rr.ok){toast.ok('已删除');load();}else toast.err(rr.error);});
+      return;
+    }
     if (tab === 'image') {
-      const list = filtered(images);
+      const list = filtered(images, 'image');
+      setCount(list.length, images.length);
       if (!list.length) { el.innerHTML = `<div class="card" style="grid-column:1/-1">${empty('没有图片素材', '去「图片生成」生成一张', 'image')}</div>`; return; }
       el.innerHTML = list.map((img) => `
         <div class="asset-card" data-id="${esc(img.id)}">
@@ -80,6 +142,7 @@ export default async function assets(container, params) {
             </div>
             <div class="btm">
               <span class="mini-btn">${esc(IMAGE_USAGES.find((u) => u.value === img.usage_type)?.label || img.usage_type || '图片')}</span>
+              <span class="mini-btn" title="所属项目">${esc(projectName(img.project_id))}</span>
               ${img.remote_url
                 ? '<span class="mini-btn" style="background:rgba(52,211,153,0.30)" title="有公网地址，可用于图生视频">可图生视频</span>'
                 : '<span class="mini-btn" style="background:rgba(255,159,10,0.26)" title="只有本机地址，Agnes 抓不到，需填公网 URL">仅本机</span>'}
@@ -90,7 +153,8 @@ export default async function assets(container, params) {
         </div>`).join('');
       bindImage(el);
     } else if (tab === 'video') {
-      const list = filtered(videos);
+      const list = filtered(videos, 'video');
+      setCount(list.length, videos.length);
       if (!list.length) { el.innerHTML = `<div class="card" style="grid-column:1/-1">${empty('没有视频素材', '去「视频生成」提交一个任务', 'video')}</div>`; return; }
       el.innerHTML = list.map((v) => `
         <div class="asset-card" data-vid="${esc(v.id)}">
@@ -109,6 +173,7 @@ export default async function assets(container, params) {
             </div>
             <div class="btm">
               <span class="mini-btn">${esc(relTime(v.created_at))}</span>
+              <span class="mini-btn" title="所属项目">${esc(projectName(v.project_id))}</span>
               ${v.video_url && !v.local_file ? `<button class="mini-btn gold" data-save="${esc(v.id)}">保存到本机</button>` : ''}
               ${v.local_file ? `<span class="mini-btn">已存本机</span>` : ''}
             </div>
@@ -116,7 +181,8 @@ export default async function assets(container, params) {
         </div>`).join('');
       bindVideo(el);
     } else {
-      const list = filtered(scripts);
+      const list = filtered(scripts, 'text');
+      setCount(list.length, scripts.length);
       if (!list.length) { el.innerHTML = `<div class="card" style="grid-column:1/-1">${empty('没有文本素材', '去「故事脚本」生成并保存', 'script')}</div>`; return; }
       el.innerHTML = list.map((s) => `
         <div class="card" data-sid="${esc(s.id)}" style="aspect-ratio:auto;cursor:pointer">
@@ -124,6 +190,7 @@ export default async function assets(container, params) {
             <div style="flex:1;min-width:0">
               <div style="font-size:13px;font-weight:550;margin-bottom:4px">${esc(s.title)}</div>
               <div style="font-size:11px;color:var(--text-4)">${esc(relTime(s.created_at))}</div>
+              <div style="font-size:11px;color:var(--text-3);margin-top:3px">${esc(projectName(s.project_id))}${s.script_type ? ` · ${esc(s.script_type)}` : ''}</div>
             </div>
             <button class="icon-btn danger" data-dels="${esc(s.id)}" style="background:rgba(255,255,255,0.07);color:var(--text-3)">${icon('trash', 13)}</button>
           </div>
@@ -162,7 +229,7 @@ export default async function assets(container, params) {
     el.querySelectorAll('[data-vid]').forEach((b) => b.onclick = (e) => {
       e.stopPropagation();
       const img = images.find((x) => x.id === b.getAttribute('data-vid'));
-      navigate('videos', { image_url: img.remote_url || '', project: img.project_id || '' });
+      navigate('videos', { image_url: img.remote_url || img.url || '', image_id: img.id, project: img.project_id || '', storyboard: img.storyboard_id || '' });
     });
     el.querySelectorAll('[data-del]').forEach((b) => b.onclick = async (e) => {
       e.stopPropagation();

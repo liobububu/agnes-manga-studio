@@ -10,16 +10,21 @@ import {
   IMAGE_ROLES, statusBadge, relTime, modelChoices,
 } from '../consts.js';
 import { api } from '../api.js';
-import { modal, toast, empty, spinner, confirm, options, prompt as promptDlg } from '../ui.js';
+import { modal, toast, empty, spinner, confirm, options, prompt as promptDlg, attachAssetMentions } from '../ui.js';
 import { head, projectPicker } from './helpers.js';
-import { state, navigate } from '../app.js';
+import { state, navigate, resolveProjectId, setActiveProject } from '../app.js';
 
 export default async function videos(container, params) {
-  let projectId = params.project || (state.projects[0] && state.projects[0].id) || '';
+  let projectId = resolveProjectId(params.project || '');
   let mode = 't2v';
   let submitting = false;
   let recent = [];
   let images = [];
+  let entityAssets = [];
+  let linkedStoryboard = null;
+  const incomingStoryboardId = params.storyboard || '';
+  let episode = Number(params.episode || 0);
+  const incomingImageId = params.image_id || '';
 
   const S = {
     t2v: { prompt: '', neg: 'low quality, blurry, distorted face, flickering, unstable motion', frames: 1, fps: 24, seed: '', res: 0 },
@@ -49,6 +54,9 @@ export default async function videos(container, params) {
       desc: 'Agnes Video 2.0 · 异步任务，提交后由本地服务后台轮询，关掉页面也不丢',
       actions: `
         ${projectPicker(state.projects, projectId, { id: 'p-picker', allowEmpty: true, emptyLabel: '未选择项目' })}
+        <select class="select select-sm" id="sb-link" style="width:190px"><option value="">不关联分镜</option></select>
+        <button class="btn btn-sm" id="back-storyboards">${icon('film', 13)}回到分镜</button>
+        <button class="btn btn-sm" id="go-assets">${icon('grid', 13)}素材库</button>
         <select class="select select-sm" id="model" style="width:180px"></select>
         <button class="btn" id="reload">${icon('refresh', 16)}</button>`,
     })}
@@ -70,9 +78,57 @@ export default async function videos(container, params) {
     </div>`;
 
   const picker = container.querySelector('#p-picker');
-  picker.onchange = () => { projectId = picker.value; loadImages(); loadRecent(); };
+  picker.onchange = () => { projectId = picker.value; setActiveProject(projectId); linkedStoryboard = null; loadStoryboardLinks(); loadImages(); loadRecent(); };
   container.querySelector('#reload').onclick = () => { loadImages(); loadRecent(); };
-  container.querySelector('#go-tasks').onclick = () => navigate('tasks');
+  container.querySelector('#back-storyboards').onclick = () => projectId ? navigate('storyboards', { project: projectId, ...(episode ? { episode: String(episode) } : {}) }) : toast.warn('先选择一个项目');
+  container.querySelector('#go-assets').onclick = () => navigate('assets', projectId ? { project: projectId } : {});
+  container.querySelector('#go-tasks').onclick = () => navigate('tasks', { project: projectId, ...(episode ? { episode: String(episode) } : {}) });
+
+  async function loadStoryboardLinks() {
+    const sel = container.querySelector('#sb-link');
+    if (!sel) return;
+    if (!projectId) { sel.innerHTML = '<option value="">不关联分镜</option>'; linkedStoryboard = null; return; }
+    const r = await api.storyboards(projectId);
+    const list = (r.ok && r.data) || [];
+    sel.innerHTML = '<option value="">不关联分镜</option>' + list.map((s) => `<option value="${esc(s.id)}">第${esc(s.episode_number)}集 · #${esc(s.shot_number)} ${esc(String(s.scene_description || '').slice(0, 18))}</option>`).join('');
+    const wanted = linkedStoryboard?.id || incomingStoryboardId;
+    if (wanted && list.some((s) => s.id === wanted)) sel.value = wanted;
+    sel.onchange = () => {
+      linkedStoryboard = list.find((s) => s.id === sel.value) || null;
+      if (linkedStoryboard) {
+        const key = stateKey(mode);
+        if (S[key] && 'prompt' in S[key] && linkedStoryboard.video_prompt) S[key].prompt = linkedStoryboard.video_prompt;
+        renderForm();
+      }
+    };
+  }
+
+  async function hydrateIncomingContext() {
+    if (!projectId || !incomingStoryboardId) return;
+    const r = await api.storyboards(projectId);
+    if (!r.ok) return;
+    linkedStoryboard = (r.data || []).find((s) => s.id === incomingStoryboardId) || null;
+    if (!linkedStoryboard) return;
+    const sbSel = container.querySelector('#sb-link');
+    if (sbSel) sbSel.value = linkedStoryboard.id;
+    mode = 'i2v';
+    S.i2v.prompt = linkedStoryboard.video_prompt || S.i2v.prompt;
+    S.i2v.neg = linkedStoryboard.negative_prompt || S.i2v.neg;
+    if (!S.i2v.image && linkedStoryboard.linked_image_id) {
+      const linkedImage = images.find((i) => i.id === linkedStoryboard.linked_image_id);
+      if (linkedImage) S.i2v.image = linkedImage.remote_url || linkedImage.url || '';
+    }
+    const seconds = Math.max(1, Number(linkedStoryboard.duration_seconds) || 5);
+    let nearest = 0;
+    DURATION_PRESETS.forEach((p, i) => {
+      const d = Math.abs(((p.frames - 1) / 24) - seconds);
+      const best = Math.abs(((DURATION_PRESETS[nearest].frames - 1) / 24) - seconds);
+      if (d < best) nearest = i;
+    });
+    S.i2v.frames = nearest;
+    S.i2v.seconds = secondsFor25(seconds);
+    container.querySelectorAll('#mode [data-mode]').forEach((x) => x.classList.toggle('on', x.getAttribute('data-mode') === mode));
+  }
 
   const mv = modelChoices(state.models, 'video', [state.settings.default_video_model || 'agnes-video-v2.0']);
   container.querySelector('#model').innerHTML = options(mv, 'value', 'label', mv[0]?.value);
@@ -227,6 +283,58 @@ export default async function videos(container, params) {
     return parsed;
   }
 
+  function usableImages() {
+    return (state.imageHost && state.imageHost.configured) ? images : images.filter((i) => i.remote_url);
+  }
+
+  function imageOptions(selected = '') {
+    return usableImages().map((i) => {
+      const value = i.remote_url || i.url;
+      const prefix = i.project_id === projectId ? '当前项目 · ' : (i.is_favorited ? '★ ' : '');
+      return `<option value="${esc(value)}"${value === selected ? ' selected' : ''}>${esc(prefix + (i.name || '未命名图片'))}</option>`;
+    }).join('');
+  }
+
+  function mentionAssets() {
+    const labels = { character: '角色', scene: '场景', prop: '道具', reference: '参考资产' };
+    return [
+      ...entityAssets.map((a) => ({ name: a.name, value: '', meta: labels[a.asset_type] || '资产' })),
+      ...usableImages().map((i) => ({ name: i.name || '未命名图片', value: i.remote_url || i.url, meta: i.project_id === projectId ? '当前项目图片' : '图片素材' })),
+    ];
+  }
+  function resolveMentionContext(text) {
+    let prompt = String(text || '');
+    const refs = [];
+    const roleMap = { character: '角色参考', scene: '场景参考', prop: '道具参考', reference: '参考图' };
+    entityAssets.forEach((a) => {
+      if (!prompt.includes('@' + a.name)) return;
+      const detail = String(a.prompt || a.description || '').trim();
+      if (detail) prompt = prompt.split('@' + a.name).join('@' + a.name + '（' + detail + '）');
+      if (!a.image_id) return;
+      const img = images.find((i) => i.id === a.image_id);
+      const url = img && (img.remote_url || img.url);
+      if (url && !refs.some((r) => r.url === url)) refs.push({ url, role: roleMap[a.asset_type] || '参考图' });
+    });
+    return { prompt, refs };
+  }
+
+  function bindPromptMentions(input, targetMode) {
+    attachAssetMentions(input, mentionAssets);
+    input.addEventListener('input', () => {
+      const names = [...input.value.matchAll(/@([^\s@，。；;]+)/g)].map((m) => m[1]);
+      if (!names.length) return;
+      const picked = mentionAssets().filter((a) => names.includes(a.name));
+      const mediaPicked = picked.filter((a) => a.value);
+      if (targetMode === 'i2v' && mediaPicked[0] && !S.i2v.image) S.i2v.image = mediaPicked[0].value;
+      if (targetMode === 'multi') mediaPicked.forEach((a) => {
+        if (S.multi.imgs.some((x) => x.url === a.value)) return;
+        const slot = S.multi.imgs.find((x) => !x.url);
+        if (slot) slot.url = a.value;
+        else if (S.multi.imgs.length < 8) S.multi.imgs.push({ url: a.value, role: '参考图' });
+      });
+    });
+  }
+
   function renderForm() {
     const box = container.querySelector('#form');
     if (mode === 't2v') {
@@ -239,13 +347,14 @@ export default async function videos(container, params) {
         ${paramsBlock('t2v')}
         <button class="btn btn-primary btn-block" id="submit">${icon('wand', 15)}创建视频任务</button>`;
       box.querySelector('#f-prompt').oninput = (e) => { S.t2v.prompt = e.target.value; };
+      bindPromptMentions(box.querySelector('#f-prompt'), 't2v');
       box.querySelector('#f-neg').oninput = (e) => { S.t2v.neg = e.target.value; };
       bindParams('t2v');
     } else if (mode === 'i2v') {
       box.innerHTML = `
         <div class="section-label">输入素材</div>
-        <div class="field"><label>参考图片（公网可访问 URL）</label>
-          <input class="input mono" id="f-image" placeholder="https://…" value="${esc(S.i2v.image)}" />
+        <div class="field"><label>参考图片</label>
+          <input class="input mono" id="f-image" placeholder="可粘贴公网 URL，或从素材库选择" value="${esc(S.i2v.image)}" />
           ${(() => {
             // 配了图床：本机图片也能选，提交时后端自动上传成公网地址
             const usable = (state.imageHost && state.imageHost.configured)
@@ -265,7 +374,7 @@ export default async function videos(container, params) {
                  </div>`
               : '';
           })()}
-          <div class="hint">图生视频需要 Agnes 能抓到的公网图片。本地图片请先上传公网图床。</div>
+          <div class="hint">优先从素材库选择。配置图床后，本机图片会在提交时自动上传，无需手动处理公网地址。</div>
           <div id="img-preview" style="margin-top:8px"></div>
         </div>
         <div class="section-label">视频描述</div>
@@ -278,6 +387,7 @@ export default async function videos(container, params) {
       const img = box.querySelector('#f-image');
       img.oninput = () => { S.i2v.image = img.value; preview(img.value); };
       box.querySelector('#f-prompt').oninput = (e) => { S.i2v.prompt = e.target.value; };
+      bindPromptMentions(box.querySelector('#f-prompt'), 'i2v');
       box.querySelector('#f-neg').oninput = (e) => { S.i2v.neg = e.target.value; };
       const pick = box.querySelector('#f-img-pick');
       if (pick) pick.onchange = () => {
@@ -289,6 +399,7 @@ export default async function videos(container, params) {
     } else if (mode === 'multi') {
       box.innerHTML = `
         <div class="section-label">参考图片（2-8 张）</div>
+        <div class="hint" style="margin-bottom:10px">每个槽位都可以直接调用素材库，并为图片指定角色/场景等用途。当前项目素材优先显示。</div>
         <div id="mi-list" class="field"></div>
         ${S.multi.imgs.length < 8 ? `<button class="btn btn-sm btn-block" id="mi-add" style="margin-bottom:14px">${icon('plus', 13)}添加图片</button>` : ''}
         <div class="section-label">视频描述</div>
@@ -298,15 +409,17 @@ export default async function videos(container, params) {
         <button class="btn btn-primary btn-block" id="submit">${icon('layers', 15)}多图参考生成</button>`;
       renderMi();
       box.querySelector('#f-prompt').oninput = (e) => { S.multi.prompt = e.target.value; };
+      bindPromptMentions(box.querySelector('#f-prompt'), 'multi');
       const add = box.querySelector('#mi-add');
       if (add) add.onclick = () => { S.multi.imgs.push({ url: '', role: '场景参考' }); renderForm(); };
       bindParams('multi');
     } else if (mode === 'keyframe') {
       box.innerHTML = `
-        <div class="section-label">关键帧图片（公网 URL）</div>
-        <div class="field"><label>起始关键帧 *</label><input class="input mono" id="kf-start" value="${esc(S.kf.start)}" placeholder="https://…" /></div>
-        <div class="field"><label>中间帧（可选）</label><input class="input mono" id="kf-mid" value="${esc(S.kf.middle)}" /></div>
-        <div class="field"><label>结束关键帧 *</label><input class="input mono" id="kf-end" value="${esc(S.kf.end)}" /></div>
+        <div class="section-label">关键帧图片</div>
+        <div class="hint" style="margin-bottom:10px">可直接调用素材库。本机图片在已配置图床时会自动上传，不需要手工找公网 URL。</div>
+        <div class="field"><label>起始关键帧 *</label><input class="input mono" id="kf-start" value="${esc(S.kf.start)}" placeholder="粘贴 URL 或从素材库选择" /><select class="select select-sm" data-kfpick="start" style="margin-top:6px"><option value="">从素材库选择…</option>${imageOptions(S.kf.start)}</select></div>
+        <div class="field"><label>中间帧（可选）</label><input class="input mono" id="kf-mid" value="${esc(S.kf.middle)}" /><select class="select select-sm" data-kfpick="middle" style="margin-top:6px"><option value="">从素材库选择…</option>${imageOptions(S.kf.middle)}</select></div>
+        <div class="field"><label>结束关键帧 *</label><input class="input mono" id="kf-end" value="${esc(S.kf.end)}" placeholder="粘贴 URL 或从素材库选择" /><select class="select select-sm" data-kfpick="end" style="margin-top:6px"><option value="">从素材库选择…</option>${imageOptions(S.kf.end)}</select></div>
         <div class="section-label">过渡描述</div>
         <div class="field"><textarea class="textarea mono" id="f-prompt" rows="4">${esc(S.kf.prompt)}</textarea></div>
         ${paramsBlock('kf', { res: false })}
@@ -314,7 +427,17 @@ export default async function videos(container, params) {
       box.querySelector('#kf-start').oninput = (e) => { S.kf.start = e.target.value; };
       box.querySelector('#kf-mid').oninput = (e) => { S.kf.middle = e.target.value; };
       box.querySelector('#kf-end').oninput = (e) => { S.kf.end = e.target.value; };
+      box.querySelectorAll('[data-kfpick]').forEach((sel) => {
+        sel.onchange = () => {
+          if (!sel.value) return;
+          const key = sel.getAttribute('data-kfpick');
+          S.kf[key] = sel.value;
+          const input = box.querySelector(key === 'start' ? '#kf-start' : key === 'middle' ? '#kf-mid' : '#kf-end');
+          if (input) input.value = sel.value;
+        };
+      });
       box.querySelector('#f-prompt').oninput = (e) => { S.kf.prompt = e.target.value; };
+      bindPromptMentions(box.querySelector('#f-prompt'), 'keyframe');
       bindParams('kf');
     } else if (mode === 'audio') {
       box.innerHTML = `
@@ -368,13 +491,23 @@ export default async function videos(container, params) {
     el.innerHTML = S.multi.imgs.map((im, i) => `
       <div class="row" style="margin-bottom:8px;align-items:flex-start">
         <div style="flex:1;min-width:0">
-          <input class="input mono input-sm" data-mi="${i}" value="${esc(im.url)}" placeholder="图片 ${i + 1} URL（公网）" style="height:36px;margin-bottom:6px" />
+          <input class="input mono input-sm" data-mi="${i}" value="${esc(im.url)}" placeholder="图片 ${i + 1}：粘贴 URL 或从素材库选择" style="height:36px;margin-bottom:6px" />
+          <select class="select select-xs" data-mipick="${i}" style="margin-bottom:6px"><option value="">从素材库选择…</option>${imageOptions(im.url)}</select>
           <select class="select select-xs" data-mr="${i}">${options(IMAGE_ROLES, 'v', 'v', im.role)}</select>
         </div>
         ${S.multi.imgs.length > 2 ? `<button class="icon-btn danger" data-mdel="${i}" style="background:rgba(255,69,58,0.10);color:var(--err);margin-top:4px">${icon('trash', 13)}</button>` : ''}
       </div>`).join('');
     el.querySelectorAll('[data-mi]').forEach((x) => {
       x.oninput = () => { S.multi.imgs[Number(x.getAttribute('data-mi'))].url = x.value; };
+    });
+    el.querySelectorAll('[data-mipick]').forEach((x) => {
+      x.onchange = () => {
+        if (!x.value) return;
+        const i = Number(x.getAttribute('data-mipick'));
+        S.multi.imgs[i].url = x.value;
+        const input = el.querySelector(`[data-mi="${i}"]`);
+        if (input) input.value = x.value;
+      };
     });
     el.querySelectorAll('[data-mr]').forEach((x) => {
       x.onchange = () => { S.multi.imgs[Number(x.getAttribute('data-mr'))].role = x.value; };
@@ -388,41 +521,51 @@ export default async function videos(container, params) {
   async function submit() {
     if (submitting) return;
     const model = container.querySelector('#model').value;
-    let payload = { project_id: projectId || null, model };
+    let payload = { project_id: projectId || null, model, storyboard_id: linkedStoryboard?.id || container.querySelector('#sb-link')?.value || null };
 
     if (mode === 't2v') {
       if (!S.t2v.prompt.trim()) { toast.err('请输入视频提示词'); return; }
       const r = VIDEO_RESOLUTIONS[S.t2v.res] || VIDEO_RESOLUTIONS[0];
       Object.assign(payload, {
-        mode: 'text_to_video', prompt: S.t2v.prompt, negative_prompt: S.t2v.neg,
+        mode: 'text_to_video', prompt: resolveMentionContext(S.t2v.prompt).prompt, negative_prompt: S.t2v.neg,
         width: r.w, height: r.h, num_frames: DURATION_PRESETS[S.t2v.frames].frames,
         frame_rate: S.t2v.fps, seed: S.t2v.seed || undefined,
       });
     } else if (mode === 'i2v') {
-      if (!S.i2v.image.trim()) { toast.err('请填写参考图片 URL'); return; }
-      if (!/^https?:\/\//.test(S.i2v.image)) { toast.err('参考图必须是 http(s) 开头的公网地址'); return; }
+      if (!S.i2v.image.trim()) { toast.err('请选择或填写参考图片'); return; }
+      if (!/^https?:\/\//.test(S.i2v.image) && !(state.imageHost && state.imageHost.configured)) {
+        toast.err('这张图只有本机地址。请先在设置里配置图床，或换一张已有公网地址的素材'); return;
+      }
       if (!S.i2v.prompt.trim()) { toast.err('请输入运动描述'); return; }
       Object.assign(payload, {
-        mode: 'image_to_video', prompt: S.i2v.prompt, negative_prompt: S.i2v.neg,
+        mode: 'image_to_video', prompt: resolveMentionContext(S.i2v.prompt).prompt, negative_prompt: S.i2v.neg,
         image: S.i2v.image, width: 1152, height: 768,
         num_frames: DURATION_PRESETS[S.i2v.frames].frames, frame_rate: S.i2v.fps, seed: S.i2v.seed || undefined,
       });
     } else if (mode === 'multi') {
-      const valid = S.multi.imgs.filter((i) => i.url.trim());
+      const mentionCtx = resolveMentionContext(S.multi.prompt);
+      const autoRefs = mentionCtx.refs.filter((r) => !S.multi.imgs.some((i) => i.url === r.url));
+      const valid = [...S.multi.imgs.filter((i) => i.url.trim()), ...autoRefs].slice(0, 8);
       if (valid.length < 2) { toast.err('多图参考至少需要 2 张图片'); return; }
-      if (valid.some((i) => !/^https?:\/\//.test(i.url.trim()))) { toast.err('参考图都必须是公网地址'); return; }
+      if (valid.some((i) => !/^https?:\/\//.test(i.url.trim())) && !(state.imageHost && state.imageHost.configured)) {
+        toast.err('存在只有本机地址的参考图。请先配置图床，或改选已有公网地址的素材'); return;
+      }
       if (!S.multi.prompt.trim()) { toast.err('请输入视频提示词'); return; }
       Object.assign(payload, {
-        mode: 'multi_image', prompt: S.multi.prompt, source_images: valid,
+        mode: 'multi_image', prompt: mentionCtx.prompt, source_images: valid,
         width: 1152, height: 768, num_frames: DURATION_PRESETS[S.multi.frames].frames,
         frame_rate: 24, seed: S.multi.seed || undefined,
       });
     } else if (mode === 'keyframe') {
       if (!S.kf.start.trim() || !S.kf.end.trim()) { toast.err('起始帧和结束帧都要填'); return; }
+      const kfUrls = [S.kf.start, S.kf.middle, S.kf.end].filter((x) => x.trim());
+      if (kfUrls.some((x) => !/^https?:\/\//.test(x.trim())) && !(state.imageHost && state.imageHost.configured)) {
+        toast.err('关键帧包含本机图片。请先配置图床，或改选已有公网地址的素材'); return;
+      }
       const frames = [{ url: S.kf.start, role: '起始画面' }, { url: S.kf.end, role: '目标画面' }];
       if (S.kf.middle.trim()) frames.splice(1, 0, { url: S.kf.middle, role: '中间帧' });
       Object.assign(payload, {
-        mode: 'keyframe', prompt: S.kf.prompt, source_images: frames, mode_flag: 'keyframes',
+        mode: 'keyframe', prompt: resolveMentionContext(S.kf.prompt).prompt, source_images: frames, mode_flag: 'keyframes',
         width: 1152, height: 768, num_frames: DURATION_PRESETS[S.kf.frames].frames,
         frame_rate: 24, seed: S.kf.seed || undefined,
       });
@@ -534,8 +677,10 @@ export default async function videos(container, params) {
   }
 
   async function loadImages() {
-    const r = await api.images(projectId || undefined);
-    images = (r.ok && r.data) || [];
+    // 生成页允许跨项目调用素材；当前项目素材排前面，避免用户反复切项目找参考图。
+    const [r, entities] = await Promise.all([api.images(), api.assetEntities(projectId)]);
+    images = ((r.ok && r.data) || []).sort((a, b) => Number(b.project_id === projectId) - Number(a.project_id === projectId));
+    entityAssets = (entities.ok && entities.data) || [];
   }
 
   async function loadRecent() {
@@ -560,7 +705,13 @@ export default async function videos(container, params) {
       </div>`).join('');
   }
 
+  await loadStoryboardLinks();
   await loadImages();
+  if (incomingImageId) {
+    const incoming = images.find((i) => i.id === incomingImageId);
+    if (incoming) S.i2v.image = incoming.remote_url || incoming.url || S.i2v.image;
+  }
+  await hydrateIncomingContext();
   renderForm();
   await loadRecent();
 }

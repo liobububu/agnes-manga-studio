@@ -28,9 +28,20 @@ function ok(name, cond, extra = '') {
 function eq(name, a, b) { return ok(name, a === b, `期望 ${JSON.stringify(b)}，实际 ${JSON.stringify(a)}`); }
 function group(t) { console.log(`\n── ${t} ──`); }
 
-const HOME = path.join(os.tmpdir(), `agnes-apitest-${process.pid}`);
-fs.rmSync(HOME, { recursive: true, force: true });
-fs.mkdirSync(HOME, { recursive: true });
+const testRoot = path.resolve(process.env.AGNES_STUDIO_TEST_ROOT || os.tmpdir());
+let HOME = '';
+try {
+  const relative = path.relative(ROOT, testRoot);
+  if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error('不能位于项目目录内，请使用项目外的专用临时目录');
+  }
+  if (!fs.statSync(testRoot).isDirectory()) throw new Error('必须是已存在的目录');
+  fs.accessSync(testRoot, fs.constants.W_OK);
+  HOME = fs.mkdtempSync(path.join(testRoot, 'agnes-apitest-'));
+} catch (error) {
+  console.error(`测试目录不可用：${testRoot}（${error.message}；请创建项目外的可写目录）`);
+  process.exit(1);
+}
 
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 

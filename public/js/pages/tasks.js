@@ -9,8 +9,8 @@ import {
 } from '../consts.js';
 import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm, prompt as promptDlg, options } from '../ui.js';
-import { head } from './helpers.js';
-import { onEvent } from '../app.js';
+import { head, projectPicker } from './helpers.js';
+import { state, onEvent, navigate, resolveProjectId, setActiveProject } from '../app.js';
 
 const MODE_LABELS = {
   text_to_video: '文生视频',
@@ -21,9 +21,11 @@ const MODE_LABELS = {
 const TYPE_LABELS = { text: '文本', image: '图片', video: '视频' };
 const REF_STATUS = new Set(['poll_timeout', 'video_url_missing', 'remote_submitted', 'sync_failed', 'result_parse_failed']);
 
-export default async function tasks(container) {
+export default async function tasks(container, params = {}) {
+  let projectId = resolveProjectId(params.project || '');
+  const episode = Number(params.episode || 0);
   let tab = 'all';
-  let statusFilter = 'all';
+  let statusFilter = ['all', 'queued', 'in_progress', 'completed', 'failed'].includes(params.status) ? params.status : 'all';
   let search = '';
   let videos = [];
   let others = [];
@@ -34,6 +36,10 @@ export default async function tasks(container) {
       title: '镜头任务',
       desc: '视频由本地服务后台轮询，关掉浏览器也会继续跑',
       actions: `
+        ${projectPicker(state.projects, projectId, { id: 'p-picker', allOption: true })}
+        <button class="btn btn-sm" id="back-storyboards">${icon('film', 13)}回到分镜</button>
+        <button class="btn btn-sm" id="go-assets">${icon('grid', 13)}素材库</button>
+        <button class="btn btn-sm" id="retry-visible">${icon('refresh', 13)}恢复当前失败任务</button>
         <button class="btn btn-sm" id="batch-fix">${icon('wand', 13)}批量补充视频地址</button>
         <button class="btn" id="reload">${icon('refresh', 16)}刷新</button>`,
     })}
@@ -56,7 +62,13 @@ export default async function tasks(container) {
     <div id="list">${spinner('加载任务…')}</div>`;
 
   container.querySelector('#reload').onclick = load;
+  container.querySelector('#back-storyboards').onclick = () => projectId ? navigate('storyboards', { project: projectId, ...(episode ? { episode: String(episode) } : {}) }) : toast.warn('先选择一个项目');
+  container.querySelector('#go-assets').onclick = () => navigate('assets', projectId ? { project: projectId } : {});
+  container.querySelector('#p-picker').onchange = (e) => { projectId = e.target.value === '__all__' ? '' : e.target.value; if (projectId) setActiveProject(projectId); render(); };
   container.querySelector('#batch-fix').onclick = batchFix;
+  container.querySelector('#retry-visible').onclick = retryVisible;
+  const statusSelect = container.querySelector('#status');
+  if ([...statusSelect.options].some((o) => o.value === statusFilter)) statusSelect.value = statusFilter;
   container.querySelectorAll('#tabs [data-tab]').forEach((b) => {
     b.onclick = () => {
       tab = b.getAttribute('data-tab');
@@ -90,6 +102,7 @@ export default async function tasks(container) {
     const showOther = tab === 'all' || tab === 'image' || tab === 'text';
 
     const vRows = showVideo ? videos.filter((v) => {
+      if (projectId && v.project_id !== projectId) return false;
       if (statusFilter !== 'all' && v.status !== statusFilter) return false;
       if (search && !String(v.video_prompt).toLowerCase().includes(search)
         && !String(v.name).toLowerCase().includes(search)) return false;
@@ -97,6 +110,7 @@ export default async function tasks(container) {
     }) : [];
 
     const oRows = showOther ? others.filter((t) => {
+      if (projectId && t.project_id !== projectId) return false;
       if (tab !== 'all' && t.task_type !== tab) return false;
       if (statusFilter !== 'all' && t.status !== statusFilter) return false;
       if (search && !JSON.stringify(t.input_content || {}).toLowerCase().includes(search)) return false;
@@ -130,6 +144,7 @@ export default async function tasks(container) {
             <span>${esc(MODE_LABELS[v.generation_mode] || v.generation_mode)}</span><span>·</span>
             <span>${esc(v.num_frames)}帧 ${esc(v.frame_rate)}fps</span><span>·</span>
             <span>${esc(v.model_name)}</span>
+            ${v.storyboard_id ? `<span>·</span><button class="mini-btn" data-shot="${esc(v.storyboard_id)}" title="回到关联分镜">关联镜头</button>` : ''}
             <span>·</span><span>${esc(relTime(v.created_at))}</span>
           </div>
           <div class="prompt-line">${esc(v.video_prompt)}</div>
@@ -203,7 +218,14 @@ export default async function tasks(container) {
       b.onclick = () => fn(b.getAttribute(`data-${attr}`), b);
     });
 
+    bindOne('shot', (shotId) => {
+      const v = videos.find((x) => x.storyboard_id === shotId);
+      const targetProject = v?.project_id || projectId;
+      if (!targetProject) { toast.warn('这个任务没有可定位的项目'); return; }
+      navigate('storyboards', { project: targetProject, ...(episode ? { episode: String(episode) } : {}), storyboard: shotId });
+    });
     bindOne('fav', async (id) => {
+      // noop anchor keeps action bindings grouped below
       const v = videos.find((x) => x.id === id);
       const r = await api.updateVideo(id, { is_favorited: !v.is_favorited });
       if (!r.ok) toast.err(r.error || '收藏失败');
@@ -292,6 +314,28 @@ export default async function tasks(container) {
       const r = await api.deleteTask(id);
       if (r.ok) { toast.ok('已删除'); load(); } else toast.err(r.error);
     });
+  }
+
+  async function retryVisible() {
+    const candidates = videos.filter((v) => {
+      if (projectId && v.project_id !== projectId) return false;
+      if (tab !== 'all' && tab !== 'video') return false;
+      if (statusFilter !== 'all' && v.status !== statusFilter) return false;
+      if (search && !String(v.video_prompt).toLowerCase().includes(search) && !String(v.name).toLowerCase().includes(search)) return false;
+      return REF_STATUS.has(v.status) || REF_STATUS.has(v.local_status);
+    });
+    if (!candidates.length) { toast.info('当前筛选范围没有可恢复的视频任务'); return; }
+    if (!(await confirm({ text: `将重新查询当前范围内 ${candidates.length} 个异常任务，不会重复提交生成。继续吗？`, okText: '开始恢复' }))) return;
+    let ok = 0; let fail = 0;
+    for (const v of candidates) {
+      busy.add(v.id); render();
+      const r = await api.refreshVideo(v.id);
+      if (r.ok) ok += 1; else fail += 1;
+      busy.delete(v.id);
+    }
+    if (fail) toast.warn(`恢复完成：${ok} 个已刷新，${fail} 个仍需处理`);
+    else toast.ok(`已刷新 ${ok} 个异常任务`);
+    load();
   }
 
   async function batchFix() {

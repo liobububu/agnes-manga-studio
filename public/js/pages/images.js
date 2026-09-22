@@ -4,16 +4,32 @@
  */
 import { icon, esc, copyText, IMAGE_SIZES, IMAGE_USAGES, modelChoices } from '../consts.js';
 import { api } from '../api.js';
-import { modal, toast, empty, spinner, confirm, options } from '../ui.js';
+import { modal, toast, empty, spinner, confirm, options, attachAssetMentions } from '../ui.js';
 import { head, projectPicker } from './helpers.js';
-import { state, navigate } from '../app.js';
+import { state, navigate, resolveProjectId, setActiveProject } from '../app.js';
 
 export default async function images(container, params) {
-  let projectId = params.project || (state.projects[0] && state.projects[0].id) || '';
+  let projectId = resolveProjectId(params.project || '');
   let storyboardId = params.storyboard || '';
+  let episode = Number(params.episode || 0);
   let mode = 't2i';
   let items = [];
   let generating = false;
+  let referenceImages = [];
+  let entityAssets = [];
+  const entityLabel = { character: '角色', scene: '场景', prop: '道具', reference: '参考资产' };
+  const mentionAssets = () => [
+    ...entityAssets.map((a) => ({ name: a.name, meta: entityLabel[a.asset_type] || '资产' })),
+    ...referenceImages.map((i) => ({ name: i.name || '未命名图片', meta: i.project_id === projectId ? '当前项目图片' : '图片素材' })),
+  ];
+  const expandEntityPrompt = (text) => {
+    let out = text;
+    entityAssets.forEach((a) => {
+      const detail = String(a.prompt || a.description || '').trim();
+      if (detail && out.includes('@' + a.name)) out = out.split('@' + a.name).join('@' + a.name + '（' + detail + '）');
+    });
+    return out;
+  };
 
   container.innerHTML = `
     ${head({
@@ -21,6 +37,8 @@ export default async function images(container, params) {
       desc: 'Agnes 图像模型 · 生成结果自动保存到本机素材库',
       actions: `
         ${projectPicker(state.projects, projectId, { id: 'p-picker', allowEmpty: true, emptyLabel: '未选择项目' })}
+        <button class="btn btn-sm" id="back-storyboards">${icon('film', 13)}回到分镜</button>
+        <button class="btn btn-sm" id="go-assets">${icon('grid', 13)}素材库</button>
         <button class="btn" id="reload">${icon('refresh', 16)}</button>`,
     })}
     <div class="grid" style="grid-template-columns:minmax(320px,0.85fr) minmax(0,2fr);gap:20px">
@@ -50,10 +68,10 @@ export default async function images(container, params) {
 
           <div id="i2i-box" style="display:none">
             <div class="field">
-              <label>原图（公网可访问 URL）</label>
-              <input class="input mono" id="i2i-url" placeholder="https://…" />
+              <label>原图</label>
+              <input class="input mono" id="i2i-url" placeholder="可粘贴公网 URL，或从素材库选择" />
               <select class="select select-sm" id="i2i-pick" style="margin-top:8px"></select>
-              <div class="hint">图生图需要 Agnes 能抓到的公网图片地址。本地生成的图片请先上传到公网图床，或把 <span style="font-family:var(--mono)">remote_url</span> 填进来。</div>
+              <div class="hint">优先从素材库选择。已配置图床时，本机图片也可直接选，提交时自动上传；未配置时只能使用已有公网地址的素材。</div>
             </div>
             <div class="field">
               <label>编辑指令</label>
@@ -83,9 +101,13 @@ export default async function images(container, params) {
     </div>`;
 
   const picker = container.querySelector('#p-picker');
-  picker.onchange = () => { projectId = picker.value; load(); };
+  picker.onchange = () => { projectId = picker.value; storyboardId = ''; setActiveProject(projectId); loadStoryboards(); load(); };
   container.querySelector('#reload').onclick = () => load();
+  container.querySelector('#back-storyboards').onclick = () => projectId ? navigate('storyboards', { project: projectId, ...(episode ? { episode: String(episode) } : {}) }) : toast.warn('先选择一个项目');
+  container.querySelector('#go-assets').onclick = () => navigate('assets', projectId ? { project: projectId } : {});
   container.querySelector('#gen').onclick = generate;
+  attachAssetMentions(container.querySelector('#t2i-prompt'), mentionAssets);
+  attachAssetMentions(container.querySelector('#i2i-prompt'), mentionAssets);
   container.querySelectorAll('#mode [data-mode]').forEach((b) => {
     b.onclick = () => {
       mode = b.getAttribute('data-mode');
@@ -104,7 +126,7 @@ export default async function images(container, params) {
   // 分镜下拉
   async function loadStoryboards() {
     if (!projectId) return;
-    const r = await api.storyboards(projectId);
+    const r = await api.storyboards(projectId, episode || undefined);
     const sel = container.querySelector('#sb-sel');
     if (!sel) return;
     const list = (r.ok && r.data) || [];
@@ -116,9 +138,19 @@ export default async function images(container, params) {
       if (s && s.image_prompt) container.querySelector('#t2i-prompt').value = s.image_prompt;
     }
     sel.onchange = () => {
-      const s = list.find((x) => x.id === sel.value);
+      storyboardId = sel.value;
+      const s = list.find((x) => x.id === storyboardId);
       if (s && s.image_prompt) container.querySelector('#t2i-prompt').value = s.image_prompt;
     };
+  }
+
+  function mentionedReference(text) {
+    for (const a of entityAssets) {
+      if (!a.image_id || !String(text || '').includes('@' + a.name)) continue;
+      const img = referenceImages.find((i) => i.id === a.image_id);
+      if (img && (img.remote_url || (state.imageHost && state.imageHost.configured && img.url))) return img.remote_url || img.url;
+    }
+    return '';
   }
 
   async function generate() {
@@ -128,7 +160,7 @@ export default async function images(container, params) {
     let payload = { model, project_id: projectId || null };
 
     if (mode === 't2i') {
-      const prompt = container.querySelector('#t2i-prompt').value.trim();
+      const prompt = expandEntityPrompt(container.querySelector('#t2i-prompt').value.trim());
       if (!prompt) { toast.err('请输入图片提示词'); return; }
       const size = container.querySelector('#t2i-size').value;
       const sz = IMAGE_SIZES.find((s) => s.value === size) || IMAGE_SIZES[0];
@@ -137,9 +169,11 @@ export default async function images(container, params) {
         usage_type: container.querySelector('#t2i-usage').value,
         storyboard_id: container.querySelector('#sb-sel')?.value || null,
       });
+      const ref = mentionedReference(container.querySelector('#t2i-prompt').value);
+      if (ref) payload.image = ref;
     } else {
       const url = container.querySelector('#i2i-url').value.trim();
-      const prompt = container.querySelector('#i2i-prompt').value.trim();
+      const prompt = expandEntityPrompt(container.querySelector('#i2i-prompt').value.trim());
       if (!prompt) { toast.err('请输入编辑指令'); return; }
       if (!url) { toast.err('请填写原图公网 URL'); return; }
       const size = container.querySelector('#i2i-size').value;
@@ -159,22 +193,26 @@ export default async function images(container, params) {
     container.querySelector('#gen').disabled = false;
     st.innerHTML = '';
     if (!r.ok) { toast.err(r.error); return; }
-    toast.ok('图片已生成并保存到素材库');
-    load();
+    toast.ok(storyboardId ? '图片已生成并自动回填当前镜头' : '图片已生成并保存到素材库');
+    await load();
+    if (storyboardId) await loadStoryboards();
   }
 
   async function load() {
-    const r = await api.images(projectId || undefined);
+    const [r, all, entities] = await Promise.all([api.images(projectId || undefined), api.images(), api.assetEntities(projectId)]);
     const el = container.querySelector('#gallery');
     if (!r.ok) { el.innerHTML = `<div class="note red">${esc(r.error)}</div>`; return; }
     items = r.data || [];
+    referenceImages = (all.ok && all.data) || items;
+    entityAssets = (entities.ok && entities.data) || [];
     container.querySelector('#count').textContent = items.length;
 
-    // 图生图的素材选择器
+    // 图生图素材选择器：当前项目优先，但允许跨项目复用收藏/历史素材。
     const pick = container.querySelector('#i2i-pick');
     if (pick) {
-      pick.innerHTML = `<option value="">或从素材库选（用其公网 remote_url）</option>`
-        + items.filter((i) => i.remote_url).map((i) => `<option value="${esc(i.remote_url)}">${esc(i.name)}</option>`).join('');
+      const usable = referenceImages.filter((i) => i.remote_url || (state.imageHost && state.imageHost.configured && i.url));
+      pick.innerHTML = `<option value="">从素材库选择参考图…</option>`
+        + usable.map((i) => `<option value="${esc(i.remote_url || i.url)}">${esc(i.project_id === projectId ? '当前项目 · ' : '')}${esc(i.name || '未命名图片')}</option>`).join('');
       pick.onchange = () => { if (pick.value) container.querySelector('#i2i-url').value = pick.value; };
     }
 
@@ -231,9 +269,10 @@ export default async function images(container, params) {
     });
     bind('tovideo', (id) => {
       const img = items.find((x) => x.id === id);
+      // 视频页能识别 image_id；本机图片在已配置图床时会由后端自动公网化，不在这里错误阻断。
       const url = img.remote_url || (img.url.startsWith('http') ? img.url : '');
-      navigate('videos', { project: projectId, image_url: url, storyboard: img.storyboard_id || '' });
-      if (!url) toast.warn('这张图只有本地地址，Agnes 抓不到。要么上传公网，要么在视频页改用文生视频。', 6500);
+      navigate('videos', { project: img.project_id || projectId, ...(episode ? { episode: String(episode) } : {}), image_url: url, image_id: img.id, storyboard: img.storyboard_id || '' });
+      if (!url && !(state.imageHost && state.imageHost.configured)) toast.warn('这张图只有本地地址。配置图床后可自动上传并用于图生视频；当前仍可进入视频页改用文生视频。', 6500);
     });
     el.querySelectorAll('[data-id]').forEach((c) => {
       c.onclick = (e) => {

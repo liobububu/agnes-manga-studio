@@ -32,17 +32,65 @@ export default async function projects(container, params) {
       return;
     }
     // 顺带统计每个项目的素材数
-    const [sbs, imgs, vids] = await Promise.all([api.storyboards(), api.images(), api.videos()]);
+    const [scripts, sbs, imgs, vids, audios, plans] = await Promise.all([api.scripts(), api.storyboards(), api.images(), api.videos(), api.audioAssets(), api.editPlans('', null)]);
     const countBy = (arr, key) => {
       const m = {};
       (arr || []).forEach((x) => { if (x.project_id) m[x.project_id] = (m[x.project_id] || 0) + 1; });
       return m;
     };
+    const scC = countBy(scripts.ok ? scripts.data : [], 'project_id');
     const sbC = countBy(sbs.ok ? sbs.data : [], 'project_id');
     const imC = countBy(imgs.ok ? imgs.data : [], 'project_id');
     const vdC = countBy(vids.ok ? vids.data : [], 'project_id');
+    const plC = countBy(plans.ok ? plans.data : [], 'project_id');
+    const completedVids = {};
+    (vids.ok ? vids.data : []).forEach((v) => {
+      if (v.project_id && (v.status === 'completed' || v.video_url || v.local_file)) completedVids[v.project_id] = (completedVids[v.project_id] || 0) + 1;
+    });
 
-    el.innerHTML = `<div class="grid g3">${list.map((p) => `
+    const progressOf = (id) => {
+      const projectScripts = (scripts.ok ? scripts.data : []).filter((s) => s.project_id === id);
+      const projectShots = (sbs.ok ? sbs.data : []).filter((s) => s.project_id === id);
+      const planned = new Set();
+      projectScripts.filter((s) => s.script_type === 'episode_outline').forEach((s) => {
+        try {
+          const text = String(s.content || ''); const m = text.match(/\[[\s\S]*\]/); const arr = JSON.parse(m ? m[0] : text);
+          if (Array.isArray(arr)) arr.forEach((x, i) => planned.add(Number(x?.episode ?? x?.episode_number ?? i + 1)));
+        } catch {}
+      });
+      projectScripts.filter((s) => s.episode_number != null).forEach((s) => planned.add(Number(s.episode_number)));
+      projectShots.forEach((s) => planned.add(Number(s.episode_number) || 1));
+      const episodes = [...planned].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+      const stateOf = (ep) => {
+        const shots = projectShots.filter((s) => (Number(s.episode_number) || 1) === ep);
+        const hasScript = projectScripts.some((s) => s.script_type === 'episode_script' && Number(s.episode_number) === ep);
+        const hasStoryboard = shots.length > 0;
+        const imageMap = new Map((imgs.ok ? imgs.data : []).filter((a) => a.project_id === id).map((a) => [a.id, a]));
+        const videoMap = new Map((vids.ok ? vids.data : []).filter((a) => a.project_id === id).map((a) => [a.id, a]));
+        const imagesDone = hasStoryboard && shots.every((s) => Boolean(s.linked_image_id) && imageMap.get(s.linked_image_id)?.media_readable === true);
+        const videosDone = hasStoryboard && shots.every((s) => Boolean(s.linked_video_id) && videoMap.get(s.linked_video_id)?.media_readable === true);
+        const audioRows = (audios.ok ? audios.data : []).filter((a) => a.project_id === id && a.status === 'completed' && a.media_readable === true);
+        const audioKeys = new Set(audioRows.map((a) => `${a.storyboard_id}:${a.audio_type}`));
+        const audioDone = hasStoryboard && shots.every((shot) => {
+          const dialogueOk = !String(shot.dialogue || '').trim() || audioKeys.has(`${shot.id}:dialogue`);
+          const narrationOk = !String(shot.narration || '').trim() || audioKeys.has(`${shot.id}:narration`);
+          return dialogueOk && narrationOk;
+        });
+        const hasPlan = (plans.ok ? plans.data : []).some((p) => p.project_id === id && (Number(p.episode_number) || 1) === ep);
+        return { hasScript, hasStoryboard, imagesDone, videosDone, audioDone, hasPlan };
+      };
+      const episode = episodes.find((ep) => { const s = stateOf(ep); return !s.hasScript || !s.hasStoryboard || !s.imagesDone || !s.videosDone || !s.audioDone || !s.hasPlan; }) || episodes.at(-1) || 1;
+      const s = stateOf(episode);
+      const stages = [s.hasScript, s.hasStoryboard, s.imagesDone, s.videosDone, s.audioDone, s.hasPlan];
+      const done = stages.filter(Boolean).length;
+      const next = !s.hasScript ? ['scripts', '单集脚本'] : !s.hasStoryboard ? ['storyboards', '分镜'] : !s.imagesDone ? ['storyboards', '补齐分镜图'] : !s.videosDone ? ['storyboards', '补齐视频'] : !s.audioDone ? ['storyboards', '补齐配音'] : !s.hasPlan ? ['editor', '剪辑'] : ['editor', '继续剪辑'];
+      return { stages, done, percent: Math.round(done / stages.length * 100), next, episode };
+    };
+
+    el.innerHTML = `<div class="grid g3">${list.map((p) => {
+      const pg = progressOf(p.id);
+      const stageNames = ['脚本', '分镜', '图片', '视频', '配音', '剪辑'];
+      return `
       <div class="proj-card" data-id="${esc(p.id)}">
         <div class="top">
           <div style="min-width:0">
@@ -58,20 +106,28 @@ export default async function projects(container, params) {
           <span class="badge gray">${esc(p.aspect_ratio || '')}</span>
           ${p.art_style ? `<span class="badge gray">${esc(p.art_style)}</span>` : ''}
         </div>
+        <div style="margin:12px 0 10px">
+          <div class="row" style="justify-content:space-between;font-size:11px;color:var(--text-3);margin-bottom:6px"><span>第 ${pg.episode} 集进度 ${pg.done}/6</span><span>${pg.percent}%</span></div>
+          <div class="progress"><i style="width:${pg.percent}%"></i></div>
+          <div class="row wrap" style="gap:5px;margin-top:8px">${stageNames.map((n, i) => `<span class="badge ${pg.stages[i] ? 'green' : 'gray'}" style="font-size:10px">${pg.stages[i] ? '✓ ' : ''}${n}</span>`).join('')}</div>
+        </div>
         <div class="stats">
+          <div class="s"><span class="n">${scC[p.id] || 0}</span><span class="l">脚本</span></div>
           <div class="s"><span class="n">${sbC[p.id] || 0}</span><span class="l">分镜</span></div>
           <div class="s"><span class="n">${imC[p.id] || 0}</span><span class="l">图片</span></div>
-          <div class="s"><span class="n">${vdC[p.id] || 0}</span><span class="l">视频</span></div>
-          <div class="s"><span class="n">${esc(p.planned_episodes || 0)}</span><span class="l">预计集数</span></div>
+          <div class="s"><span class="n">${completedVids[p.id] || 0}/${vdC[p.id] || 0}</span><span class="l">成片/任务</span></div>
         </div>
         <div class="row" style="gap:6px;flex-wrap:wrap">
-          <button class="btn btn-xs" data-act="open">${icon('arrowRight', 12)}进入分镜</button>
+          <button class="btn btn-xs btn-primary" data-act="continue">${icon('arrowRight', 12)}继续：${esc(pg.next[1])}</button>
+          <button class="btn btn-xs" data-act="open">进入分镜</button>
+          <button class="btn btn-xs" data-act="assets">素材</button>
           <button class="btn btn-xs" data-act="edit">${icon('edit', 12)}编辑</button>
           <button class="btn btn-xs" data-act="dup">${icon('copy', 12)}复制</button>
           <button class="btn btn-xs" data-act="export">${icon('download', 12)}导出资料</button>
           <button class="btn btn-xs btn-danger" data-act="del">${icon('trash', 12)}删除</button>
         </div>
-      </div>`).join('')}</div>`;
+      </div>`;
+    }).join('')}</div>`;
 
     el.querySelectorAll('[data-id]').forEach((card) => {
       const id = card.getAttribute('data-id');
@@ -79,7 +135,13 @@ export default async function projects(container, params) {
         b.onclick = async (e) => {
           e.stopPropagation();
           const act = b.getAttribute('data-act');
-          if (act === 'open') navigate('storyboards', { project: id });
+          if (act === 'continue') {
+            const pg = progressOf(id);
+            const epPages = ['scripts', 'storyboards', 'images', 'videos', 'editor'];
+            navigate(pg.next[0], { project: id, ...(epPages.includes(pg.next[0]) ? { episode: String(pg.episode) } : {}), ...(pg.next[0] === 'scripts' ? { tab: 'episode_script' } : {}) });
+          }
+          else if (act === 'open') { const pg = progressOf(id); navigate('storyboards', { project: id, episode: String(pg.episode) }); }
+          else if (act === 'assets') navigate('assets', { project: id });
           else if (act === 'edit') openForm(list.find((x) => x.id === id));
           else if (act === 'dup') {
             const r2 = await api.duplicateProject(id);

@@ -37,7 +37,7 @@ export function modal(o) {
   const mask = document.createElement('div');
   mask.className = 'modal-mask';
   mask.innerHTML = `
-    <div class="modal ${o.wide ? 'wide' : ''}">
+    <div class="modal ${o.fullscreen ? 'fullscreen' : o.wide ? 'wide' : ''}">
       <div class="modal-head">
         <h3>${esc(o.title || '')}</h3>
         <button class="icon-btn" data-close style="background:transparent;color:var(--text-3)">${icon('x', 16)}</button>
@@ -54,6 +54,19 @@ export function modal(o) {
   root.appendChild(mask);
   if (o.onMount) o.onMount(mask, close);
   return { close, root: mask };
+}
+
+export function attachAssetMentions(input, getAssets) {
+  if (!input) return () => {};
+  const menu = document.createElement('div'); menu.className = 'mention-menu'; menu.hidden = true; document.body.appendChild(menu);
+  let matches = [], active = 0;
+  const close = () => { menu.hidden = true; matches = []; active = 0; };
+  const token = () => { const pos = input.selectionStart ?? input.value.length; const m = input.value.slice(0, pos).match(/(?:^|[\s，。；;、:：])@([^\s@，。；;、:：]*)$/); return m ? { query:m[1].toLowerCase(), start:pos-m[1].length-1, end:pos } : null; };
+  const insert = (a) => { const t=token(); if(!t)return; input.setRangeText(`@${a.name}`,t.start,t.end,'end'); input.dispatchEvent(new Event('input',{bubbles:true})); close(); input.focus(); };
+  const render = () => { const t=token(); if(!t){close();return;} const all=(getAssets&&getAssets())||[]; matches=all.filter(a=>a&&a.name&&(!t.query||a.name.toLowerCase().includes(t.query))).slice(0,8); if(!matches.length){close();return;} active=Math.min(active,matches.length-1); menu.innerHTML=matches.map((a,i)=>`<button type="button" class="mention-item ${i===active?'on':''}" data-i="${i}"><b>@${esc(a.name)}</b><span>${esc(a.meta||'素材')}</span></button>`).join(''); const r=input.getBoundingClientRect(); menu.style.left=`${Math.max(8,Math.min(r.left,window.innerWidth-330))}px`; menu.style.top=`${Math.min(r.bottom+6,window.innerHeight-260)}px`; menu.hidden=false; menu.querySelectorAll('[data-i]').forEach(b=>b.onmousedown=e=>{e.preventDefault();insert(matches[Number(b.dataset.i)]);}); };
+  input.addEventListener('input',render); input.addEventListener('click',render);
+  input.addEventListener('keydown',e=>{ if(menu.hidden)return; if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();active=(active+(e.key==='ArrowDown'?1:-1)+matches.length)%matches.length;render();} else if(e.key==='Enter'&&matches[active]){e.preventDefault();insert(matches[active]);} else if(e.key==='Escape')close(); });
+  input.addEventListener('blur',()=>setTimeout(close,120)); return close;
 }
 
 /** 确认框，返回 Promise<boolean> */

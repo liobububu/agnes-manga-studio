@@ -63,6 +63,11 @@ export const api = {
   reorderStoryboards: (ids) => req('POST', '/api/storyboards/reorder', { ids }),
   clearStoryboards: (projectId, episode) => req('DELETE', `/api/storyboards?project_id=${encodeURIComponent(projectId)}&episode=${episode}`),
 
+  assetEntities: (projectId) => req('GET', `/api/asset-entities${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
+  createAssetEntity: (a) => req('POST', '/api/asset-entities', a),
+  updateAssetEntity: (id, a) => req('PUT', `/api/asset-entities/${id}`, a),
+  deleteAssetEntity: (id) => req('DELETE', `/api/asset-entities/${id}`),
+
   images: (projectId) => req('GET', `/api/images${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   updateImage: (id, a) => req('PUT', `/api/images/${id}`, a),
   deleteImage: (id) => req('DELETE', `/api/images/${id}`),
@@ -85,6 +90,10 @@ export const api = {
   createTemplate: (t) => req('POST', '/api/templates', t),
   updateTemplate: (id, t) => req('PUT', `/api/templates/${id}`, t),
   deleteTemplate: (id) => req('DELETE', `/api/templates/${id}`),
+
+  audioAssets: (projectId) => req('GET', '/api/audio-assets' + (projectId ? '?project_id=' + encodeURIComponent(projectId) : '')),
+  createAudioAsset: (a) => req('POST', '/api/audio-assets', a),
+  generateTts: (a) => req('POST', '/api/tts/generate', a),
 
   editPlans: (projectId, episode) => req('GET', `/api/edit-plans?project_id=${encodeURIComponent(projectId || '')}${episode ? `&episode=${episode}` : ''}`),
   assembleEditPlan: (projectId, episode) => req('GET', `/api/edit-plans/assemble?project_id=${encodeURIComponent(projectId)}&episode=${episode}`),
