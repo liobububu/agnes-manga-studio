@@ -274,6 +274,26 @@ try {
     ok('显示总时长', /总时长/.test(await cdp.eval(`document.querySelector('#timeline')?.textContent || ''`)));
     ok('转场选中了交叉淡化', await cdp.eval(`document.querySelector('[data-tr="0"]')?.value === 'crossfade'`));
 
+    // 导出弹窗：打开、看字幕、切模式
+    await cdp.eval(`(() => { document.querySelector('#export')?.click(); return true; })()`);
+    await waitFor(() => cdp.eval(`!!document.querySelector('#srt-mode')`), '导出弹窗');
+    ok('导出弹窗有字幕模式选择', await cdp.eval(`!!document.querySelector('#srt-mode')`));
+    const modalText = await cdp.eval(`document.querySelector('.modal')?.textContent || ''`);
+    ok('弹窗显示总时长', /总时长/.test(modalText), modalText.slice(0, 120));
+    ok('弹窗显示 SRT 段落', /SRT 字幕/.test(modalText));
+
+    // 切成「只要台词」后弹窗要重新打开且模式生效（onclick 传参那个坑的回归）
+    await cdp.eval(`(() => {
+      const s = document.querySelector('#srt-mode');
+      s.value = 'dialogue';
+      s.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+    await waitFor(() => cdp.eval(`document.querySelector('#srt-mode')?.value === 'dialogue'`), '字幕模式切回弹窗');
+    ok('切换后弹窗带着新模式重开', await cdp.eval(`document.querySelector('#srt-mode')?.value === 'dialogue'`));
+    ok('切换过程无未捕获异常', (await cdp.eval(`(window.__uiErrors||[]).length`)) === 0,
+      JSON.stringify(await cdp.eval(`(window.__uiErrors||[]).slice(0,2)`)));
+
     group('每个模式点提交都不崩');
     // 关键帧模式的 mode id 是 'keyframe' 而状态键是 'kf'，
     // 直接用 mode 取状态会拿到 undefined → 提交时 TypeError。

@@ -52,7 +52,8 @@ export default async function editor(container, params) {
   epSel.onchange = () => { episode = Number(epSel.value); planId = ''; load(); };
   container.querySelector('#assemble').onclick = assemble;
   container.querySelector('#save').onclick = save;
-  container.querySelector('#export').onclick = doExport;
+  // 必须包一层：直接把 doExport 挂上去的话，点击事件对象会当成 srtMode 传进去
+  container.querySelector('#export').onclick = () => doExport();
 
   async function load() {
     const el = container.querySelector('#timeline');
@@ -131,7 +132,10 @@ export default async function editor(container, params) {
               <div style="font-size:13px">${esc(c.name || '未命名镜头')}</div>
               <div style="font-size:11px;color:var(--text-4);margin-top:2px">
                 ${c.missing ? '<span style="color:var(--warn)">还没生成视频</span>'
-                  : `入 ${c.trim_in}s → 出 ${c.trim_out}s（${dur.toFixed(1)}s / 全 ${c.duration}s）`}
+                  : `入 ${c.trim_in}s → 出 ${c.trim_out}s（${dur.toFixed(1)}s / 全 ${Number(c.duration).toFixed(1)}s）`}
+                ${c.duration_mismatch
+                  ? `<span style="color:var(--warn);margin-left:6px">· 实际时长与分镜填的 ${Number(c.planned_duration).toFixed(1)}s 不一致</span>`
+                  : ''}
               </div>
             </div>
             <input class="input input-sm" type="number" step="0.1" min="0" style="width:74px"
@@ -263,9 +267,10 @@ export default async function editor(container, params) {
     load();
   }
 
-  async function doExport() {
+  async function doExport(srtMode) {
     if (!planId) { toast.err('先保存方案再导出'); return; }
-    const r = await api.exportEditPlan(planId);
+    const mode = srtMode || 'both';
+    const r = await api.exportEditPlan(planId, mode);
     if (!r.ok) { toast.err(r.error); return; }
     const d = r.data;
     const body = `
@@ -293,10 +298,18 @@ export default async function editor(container, params) {
         </div>` : ''}
       <div class="section-label" style="margin-top:12px">ffmpeg concat 清单</div>
       <textarea class="textarea mono" rows="3" readonly>${esc(d.ffmpeg_concat)}</textarea>
-      <div class="section-label" style="margin-top:12px">
-        SRT 字幕${d.srt_count ? `（${d.srt_count} 条，可直接导入 OpenReel）` : '（本集分镜没填台词）'}
+      <div class="row" style="margin-top:12px">
+        <div class="section-label" style="margin:0">
+          SRT 字幕${d.srt_count ? `（${d.srt_count} 条，可直接导入 OpenReel）` : '（本集分镜没填台词/旁白）'}
+        </div>
+        <div class="spacer"></div>
+        <select class="select select-xs" id="srt-mode" style="width:150px">
+          <option value="both"${mode === 'both' ? ' selected' : ''}>台词 + 旁白</option>
+          <option value="dialogue"${mode === 'dialogue' ? ' selected' : ''}>只要台词</option>
+          <option value="narration"${mode === 'narration' ? ' selected' : ''}>只要旁白</option>
+        </select>
       </div>
-      <textarea class="textarea mono" rows="4" readonly>${esc(d.srt || '（无台词）')}</textarea>`;
+      <textarea class="textarea mono" rows="4" readonly>${esc(d.srt || '（无内容）')}</textarea>`;
     modal({
       title: '导出交接清单',
       wide: true,
@@ -306,6 +319,15 @@ export default async function editor(container, params) {
                <button class="btn btn-primary" data-copy>${icon('copy', 13)}复制片段清单</button>`,
       onMount(root, close) {
         root.querySelector('[data-no]').onclick = close;
+        // 换字幕模式就重新取一次导出结果，弹窗内容原地刷新
+        const modeSel = root.querySelector('#srt-mode');
+        if (modeSel) {
+          modeSel.onchange = async () => {
+            const next = modeSel.value;
+            close();
+            await doExport(next);
+          };
+        }
         root.querySelector('[data-copy]').onclick = async () => {
           const text = d.clips.map((c) => `${c.shot_number}\t${c.name}\t${c.trim_in}-${c.trim_out}`).join('\n');
           try { await navigator.clipboard.writeText(text); toast.ok('已复制'); }

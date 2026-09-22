@@ -2,7 +2,7 @@
  * dashboard.js — 工作台
  * Hero + 统计 + 快速入口 + 最近项目 + 最近生成
  */
-import { icon, esc, relTime, fmtTime } from '../consts.js';
+import { icon, esc, relTime, fmtTime, projectStatusBadge } from '../consts.js';
 import { api } from '../api.js';
 import { empty, spinner, toast } from '../ui.js';
 import { head } from './helpers.js';
@@ -105,7 +105,7 @@ export default async function dashboard(container) {
               <div>
                 <div class="nm">${esc(p.name)}</div>
               </div>
-              <span class="badge ${p.status === 'active' ? 'gold' : 'gray'}">${p.status === 'active' ? '进行中' : '已归档'}</span>
+              ${projectStatusBadge(p.status)}
             </div>
             <div class="ds">${esc(p.description || '暂无简介')}</div>
             <div class="meta">

@@ -91,7 +91,7 @@ export const api = {
   createEditPlan: (p) => req('POST', '/api/edit-plans', p),
   updateEditPlan: (id, p) => req('PUT', `/api/edit-plans/${id}`, p),
   deleteEditPlan: (id) => req('DELETE', `/api/edit-plans/${id}`),
-  exportEditPlan: (id) => req('GET', `/api/edit-plans/${id}/export`),
+  exportEditPlan: (id, srtMode) => req('GET', `/api/edit-plans/${id}/export${srtMode ? `?srt=${srtMode}` : ''}`),
 
   genText: (p) => req('POST', '/api/agnes/text', p),
 

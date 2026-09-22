@@ -24,7 +24,7 @@ const os = require('node:os');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
 
-const VERSION = '1.2.5';
+const VERSION = '1.3.0';
 // 资源释放的版本戳用内嵌文件内容哈希（见 materializeAssets），不再依赖版本号。
 
 // ─────────────────────────────────────────────────────────────

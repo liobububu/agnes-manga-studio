@@ -185,6 +185,29 @@ group('API 方法');
   const unusedHelpers = helpersExports.filter((n) => !new RegExp(`\\b${n}\\b`).test(pageSrcs));
   ok('helpers 里没有没人用的导出', unusedHelpers.length === 0, unusedHelpers.join(','));
 
+  // 带参数的处理函数不能直接挂到 onclick 上：
+  // 点击事件对象会被当成第一个参数传进去（`onclick = doExport` 就会把
+  // Event 当 srtMode 用）。必须包一层箭头函数。
+  for (const f of listJs(path.join(PUB, 'js', 'pages'))) {
+    const src = read(f);
+    const bad = [...src.matchAll(/\.onclick\s*=\s*([a-zA-Z_]\w*)\s*;/g)]
+      .map((m) => m[1])
+      .filter((name) => new RegExp(`function ${name}\\s*\\([a-zA-Z_]`).test(src));
+    if (bad.length) {
+      ok(`${path.basename(f)} 的 onclick 没有直接挂带参函数`, false,
+        `直接挂了 ${bad.join(',')}（事件对象会被当参数）`);
+    }
+  }
+  ok('onclick 挂载方式检查完毕', true);
+
+  // 项目状态徽章必须走统一实现：之前两个页面各写一遍三元表达式，
+  // 结果任何未知状态都会被静默显示成「已归档」。
+  for (const f of ['projects.js', 'dashboard.js']) {
+    const src = read(path.join(PUB, 'js', 'pages', f));
+    ok(`${f} 用统一的项目状态徽章`, /projectStatusBadge\(/.test(src) && !/status === 'active' \? 'gold'/.test(src),
+      '仍在自己拼三元表达式');
+  }
+
   // ui.js / consts.js 也是放公共导出的地方，同样要查。
   // 扫出来 5 个零调用：ui 的 dataOf；consts 的 uid / fmtBytes / downloadUrl，
   // 以及 fmtDate（只被本文件的 relTime 用，该去掉 export 而不是删函数）。

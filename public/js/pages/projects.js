@@ -2,7 +2,7 @@
  * projects.js — 项目管理
  * 列表 + 新建/编辑弹窗 + 复制/删除 + 导出资料
  */
-import { icon, esc, fmtTime, relTime, PROJECT_TYPES, PLATFORMS, ASPECTS } from '../consts.js';
+import { icon, esc, fmtTime, relTime, PROJECT_TYPES, PLATFORMS, ASPECTS, PROJECT_STATUS, projectStatusBadge } from '../consts.js';
 import { api } from '../api.js';
 import { modal, confirm, toast, empty, spinner, options } from '../ui.js';
 import { head } from './helpers.js';
@@ -49,7 +49,7 @@ export default async function projects(container, params) {
             <div class="nm">${esc(p.name)}</div>
             <div style="font-size:11px;color:var(--text-4);margin-top:3px">${esc(fmtTime(p.created_at))}</div>
           </div>
-          <span class="badge ${p.status === 'active' ? 'gold' : 'gray'}">${p.status === 'active' ? '进行中' : '已归档'}</span>
+          ${projectStatusBadge(p.status)}
         </div>
         <div class="ds">${esc(p.description || '暂无简介')}</div>
         <div class="meta">

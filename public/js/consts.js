@@ -180,6 +180,21 @@ export const TEMPLATE_TYPES = [
 ];
 
 // ── 状态标签与样式 ──────────────────────────────────────────
+export const PROJECT_STATUS = {
+  active: { label: '进行中', cls: 'gold' },
+  archived: { label: '已归档', cls: 'gray' },
+};
+
+/**
+ * 项目状态徽章。
+ * 之前在项目管理页和工作台各写了一遍 `status === 'active' ? '进行中' : '已归档'`——
+ * 那样**任何未知状态都会被显示成「已归档」**，加第三种状态时两个页面还会不一致。
+ */
+export function projectStatusBadge(status) {
+  const s = PROJECT_STATUS[status] || { label: String(status || '未知'), cls: 'gray' };
+  return `<span class="badge ${s.cls}">${esc(s.label)}</span>`;
+}
+
 export const VIDEO_STATUS = {
   queued: { label: '排队中', cls: 'blue' },
   in_progress: { label: '生成中', cls: 'gold' },

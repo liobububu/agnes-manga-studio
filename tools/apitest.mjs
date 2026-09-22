@@ -863,7 +863,17 @@ group('剪辑台');
   eq('统计到 2 个就绪', asm.data.stats.ready, 2);
   eq('统计到 1 个缺失', asm.data.stats.missing, 1);
   ok('缺失的片段被标记', asm.data.clips[2].missing === true && asm.data.clips[2].enabled === false);
-  eq('时长取自分镜', asm.data.clips[0].duration, 4);
+  // 时长必须以「生成出来的视频实际长度」为准。
+  // 分镜写的是计划值，Agnes 实际按 num_frames/frame_rate 生成——
+  // 两者不一致时用计划值会让时间线和字幕从一开始就错。
+  // 这里故意让分镜填 4 秒，但视频是 121 帧 @ 24fps ≈ 5.042 秒。
+  const first = asm.data.clips[0];
+  ok('时长用实际帧数算出来', Math.abs(first.duration - 121 / 24) < 0.01,
+    `实际 ${first.duration}`);
+  eq('保留了分镜的计划值', first.planned_duration, 4);
+  ok('标出了计划与实际不一致', first.duration_mismatch === true);
+  eq('缺视频的镜头回退到计划值', asm.data.clips[2].duration, 4);
+  eq('缺视频的镜头不标不一致', asm.data.clips[2].duration_mismatch, false);
 
   const noProject = await api('GET', '/api/edit-plans/assemble');
   eq('缺项目参数 400', noProject.status, 400);
@@ -915,6 +925,30 @@ group('剪辑台');
   // 块之间必须有空行，否则很多播放器会把两段连成一条
   ok('SRT 块之间有空行', /\n\n/.test(srt), JSON.stringify(srt));
   eq('SRT 块数 = 2', srt.trim().split(/\n\s*\n/).length, 2);
+
+  // 旁白：漫剧的旁白量常常比台词还大，只导台词会缺一大半
+  const narPlan = await api('POST', '/api/edit-plans', {
+    project_id: PROJECT_ID, episode_number: ep,
+    clips: [
+      { shot_number: 1, name: 'a', duration: 4, trim_in: 0, trim_out: 4, dialogue: '你好', narration: '夜色渐深', enabled: true },
+      { shot_number: 2, name: 'b', duration: 4, trim_in: 0, trim_out: 4, dialogue: '', narration: '只有旁白', enabled: true },
+    ],
+  });
+  const both = await api('GET', `/api/edit-plans/${narPlan.data.id}/export`);
+  ok('默认同时导出台词与旁白', both.data.srt.includes('你好') && both.data.srt.includes('夜色渐深'), both.data.srt);
+  ok('旁白用括号区分开', /（夜色渐深）/.test(both.data.srt), both.data.srt);
+  eq('两种都有时算 2 条', both.data.srt_count, 2);
+
+  const onlyD = await api('GET', `/api/edit-plans/${narPlan.data.id}/export?srt=dialogue`);
+  eq('只导台词时剩 1 条', onlyD.data.srt_count, 1);
+  ok('只导台词不含旁白', !onlyD.data.srt.includes('夜色渐深'), onlyD.data.srt);
+
+  const onlyN = await api('GET', `/api/edit-plans/${narPlan.data.id}/export?srt=narration`);
+  eq('只导旁白时剩 2 条', onlyN.data.srt_count, 2);
+  ok('只导旁白不含台词', !onlyN.data.srt.includes('你好'), onlyN.data.srt);
+
+  const badMode = await api('GET', `/api/edit-plans/${narPlan.data.id}/export?srt=xxx`);
+  eq('非法模式回退到默认', badMode.data.srt_mode, 'both');
 
   // 4) 非法入出点要被夹回，不能算出负时长
   const bad = await api('POST', '/api/edit-plans', {
