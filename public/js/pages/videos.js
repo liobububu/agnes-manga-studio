@@ -709,7 +709,11 @@ export default async function videos(container, params) {
   await loadImages();
   if (incomingImageId) {
     const incoming = images.find((i) => i.id === incomingImageId);
-    if (incoming) S.i2v.image = incoming.remote_url || incoming.url || S.i2v.image;
+    // 带 storyboard 上下文时，只接受该 storyboard 当前明确关联的图片。
+    // 旧页面/历史素材即使还带着相同 storyboard_id，也不能覆盖已经失效的 linked_image_id。
+    if (incoming && (!incomingStoryboardId || linkedStoryboard?.linked_image_id === incoming.id)) {
+      S.i2v.image = incoming.remote_url || incoming.url || S.i2v.image;
+    }
   }
   await hydrateIncomingContext();
   renderForm();

@@ -10,6 +10,7 @@ import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm, options, attachAssetMentions } from '../ui.js';
 import { head, projectPicker, renderBatchBar, episodeOptions } from './helpers.js';
 import { state, onEvent, navigate, resolveProjectId, setActiveProject } from '../app.js';
+import { episodeWorkflowState, shotWorkflowState } from '../workflow-state.js';
 
 export default async function storyboards(container, params) {
   let projectId = resolveProjectId(params.project || '');
@@ -22,7 +23,20 @@ export default async function storyboards(container, params) {
   let audioAssets = [];
   let generationTasks = [];
   let projectVideos = [];
+  async function restoreBatchJob() {
+    const r = await api.batches();
+    if (!r.ok || !Array.isArray(r.data)) return;
+    const active = r.data.filter((j) => j && ['running', 'pending', 'interrupted'].includes(j.status)).sort((a, b) => String(b.started_at || '').localeCompare(String(a.started_at || '')))[0];
+    if (!active) return;
+    job = active;
+    renderBatchBar(container.querySelector('#batch-bar'), active, async (id) => {
+      const c = await api.cancelBatch(id);
+      if (c.ok) toast.warn('已请求取消，当前这一项跑完就停');
+      else toast.err(c.error || '取消失败（任务可能已经结束）');
+    });
+  }
   let savedScripts = [];
+  let editPlans = [];
   const entityLabel = { character: '角色', scene: '场景', prop: '道具', reference: '参考资产' };
   const mentionAssets = () => [
     ...entityAssets.map((a) => ({ name: a.name, meta: entityLabel[a.asset_type] || '资产' })),
@@ -126,6 +140,8 @@ export default async function storyboards(container, params) {
     }
   });
 
+  restoreBatchJob();
+
   // 视频在后台跑完时，服务端会把这一镜回填成「视频就绪」。
   // 不订阅的话用户盯着分镜表看，状态却一直停在「有图片」，只能手动刷新。
   const offStoryboard = onEvent('storyboard', (sb) => {
@@ -145,7 +161,7 @@ export default async function storyboards(container, params) {
       el.innerHTML = `<div class="card">${empty('请先选择项目', '右上角下拉选一个项目，或去「项目管理」新建', 'folder')}</div>`;
       return;
     }
-    const [r, imgs, allImgs, entities, audios, tasks, videos, scripts] = await Promise.all([api.storyboards(projectId, episode), api.images(projectId), api.images(), api.assetEntities(projectId), api.audioAssets(projectId), api.tasks(), api.videos(projectId), api.scripts(projectId)]);
+    const [r, imgs, allImgs, entities, audios, tasks, videos, scripts, plans] = await Promise.all([api.storyboards(projectId, episode), api.images(projectId), api.images(), api.assetEntities(projectId), api.audioAssets(projectId), api.tasks(), api.videos(projectId), api.scripts(projectId), api.editPlans(projectId, episode)]);
     if (!r.ok) { el.innerHTML = `<div class="note red">${esc(r.error)}</div>`; return; }
     rows = r.data || [];
     mentionImages = (allImgs.ok && allImgs.data) || (imgs.ok && imgs.data) || [];
@@ -154,6 +170,7 @@ export default async function storyboards(container, params) {
     generationTasks = (tasks.ok && tasks.data) || [];
     projectVideos = (videos.ok && videos.data) || [];
     savedScripts = (scripts.ok && scripts.data) || [];
+    editPlans = (plans.ok && plans.data) || [];
     const scriptSelect = container.querySelector('#saved-script');
     const currentScript = scriptSelect.value;
     scriptSelect.innerHTML = '<option value="">选择项目已保存脚本…</option>' + savedScripts.map((s) => '<option value="' + esc(s.id) + '">' + esc(s.title || s.script_type || '未命名脚本') + '</option>').join('');
@@ -456,40 +473,35 @@ ${text}${assetGuide()}`,
     load();
   }
 
+  const shotState = (s) => shotWorkflowState(s, { images: Object.values(window.__imgMap || {}), videos: projectVideos, audios: audioAssets });
+  const shotStates = (shots = rows) => shots.map(shotState);
+
   function renderProductionSummary() {
     const el = container.querySelector('#production-summary');
     if (!el) return;
     if (!projectId || !rows.length) { el.innerHTML = ''; return; }
+    const workflow = episodeWorkflowState({ projectId, episode, scripts: savedScripts, storyboards: rows, images: Object.values(window.__imgMap || {}), videos: projectVideos, audios: audioAssets, plans: editPlans });
     const total = rows.length;
-    const imageReady = rows.filter((s) => s.linked_image_id).length;
-    const videoReady = rows.filter((s) => s.linked_video_id || s.status === 'video_ready' || s.status === 'done').length;
-    const missingImagePrompt = rows.filter((s) => !s.image_prompt).length;
-    const missingVideoPrompt = rows.filter((s) => !s.video_prompt).length;
-    const missingImages = rows.filter((s) => s.image_prompt && !s.linked_image_id).length;
-    const missingVideos = rows.filter((s) => s.video_prompt && !s.linked_video_id && s.status !== 'video_ready' && s.status !== 'done').length;
-    const audioByShot = new Map();
-    audioAssets.filter((a) => a.status === 'completed' && ['dialogue', 'narration'].includes(a.audio_type)).forEach((a) => {
-      const key = a.storyboard_id + ':' + a.audio_type;
-      if (!audioByShot.has(key)) audioByShot.set(key, a);
-    });
-    const expectedAudio = rows.reduce((n, s) => n + (String(s.dialogue || '').trim() ? 1 : 0) + (String(s.narration || '').trim() ? 1 : 0), 0);
-    const audioReady = rows.reduce((n, s) => n + (audioByShot.has(s.id + ':dialogue') ? 1 : 0) + (audioByShot.has(s.id + ':narration') ? 1 : 0), 0);
-    const missingAudio = Math.max(0, expectedAudio - audioReady);
+    const states = workflow.shotStates;
+    const imageReady = states.filter((s) => s.imageReady).length;
+    const videoReady = states.filter((s) => s.videoReady).length;
+    const missingImagePrompt = states.filter((s) => !s.needsImage).length;
+    const missingVideoPrompt = states.filter((s) => !s.needsVideo).length;
+    const missingImages = states.filter((s) => s.missingImage).length;
+    const missingVideos = states.filter((s) => s.missingVideo).length;
+    const expectedAudio = states.reduce((n, s) => n + (s.needsDialogue ? 1 : 0) + (s.needsNarration ? 1 : 0), 0);
+    const audioReady = states.reduce((n, s) => n + (s.needsDialogue && s.dialogueReady ? 1 : 0) + (s.needsNarration && s.narrationReady ? 1 : 0), 0);
+    const missingAudio = states.reduce((n, s) => n + (s.missingDialogue ? 1 : 0) + (s.missingNarration ? 1 : 0), 0);
     const shotIds = new Set(rows.map((s) => s.id));
     const failedImageTasks = generationTasks.filter((t) => t.project_id === projectId && t.status === 'failed' && t.task_type === 'image' && shotIds.has(t.storyboard_id));
     const failedTextTasks = generationTasks.filter((t) => t.project_id === projectId && t.status === 'failed' && t.task_type === 'text' && shotIds.has(t.storyboard_id));
     const failedVideos = projectVideos.filter((v) => v.status === 'failed' && shotIds.has(v.storyboard_id));
     const failedTotal = failedImageTasks.length + failedTextTasks.length + failedVideos.length;
-    const completeShots = rows.filter((s) => {
-      const imageOk = !s.image_prompt || Boolean(s.linked_image_id);
-      const videoOk = !s.video_prompt || Boolean(s.linked_video_id || s.status === 'video_ready' || s.status === 'done');
-      const dialogueOk = !String(s.dialogue || '').trim() || audioByShot.has(s.id + ':dialogue');
-      const narrationOk = !String(s.narration || '').trim() || audioByShot.has(s.id + ':narration');
-      return imageOk && videoOk && dialogueOk && narrationOk;
-    }).length;
+    const completeShots = states.filter((s) => s.complete).length;
     el.innerHTML = `<div class="card" style="padding:12px 16px;margin-bottom:14px">
       <div class="row wrap" style="gap:10px 18px;font-size:12.5px">
         <strong style="color:var(--text)">第 ${episode} 集生产进度</strong>
+        <span class="badge ${workflow.stages.every(Boolean) ? 'green' : 'gray'}">当前：${esc(workflow.next.label)}</span>
         <span>镜头 <b>${total}</b></span>
         <span>分镜图 <b>${imageReady}/${total}</b></span>
         <span>视频 <b>${videoReady}/${total}</b></span>
@@ -516,15 +528,10 @@ ${text}${assetGuide()}`,
   });
 
   function selectMissing(kind) {
-    const audioKeys = new Set(audioAssets.filter((a) => a.status === 'completed').map((a) => a.storyboard_id + ':' + a.audio_type));
     selected.clear();
-    rows.forEach((s) => {
-      const missing = kind === 'image'
-        ? Boolean(s.image_prompt && !s.linked_image_id)
-        : kind === 'video'
-          ? Boolean(s.video_prompt && !s.linked_video_id && s.status !== 'video_ready' && s.status !== 'done')
-          : Boolean((String(s.dialogue || '').trim() && !audioKeys.has(s.id + ':dialogue')) || (String(s.narration || '').trim() && !audioKeys.has(s.id + ':narration')));
-      if (missing) selected.add(s.id);
+    shotStates().forEach((state) => {
+      const missing = kind === 'image' ? state.missingImage : kind === 'video' ? state.missingVideo : (state.missingDialogue || state.missingNarration);
+      if (missing) selected.add(state.shot.id);
     });
     container.querySelector('#sel-all').checked = selected.size === rows.length;
     renderTable();
@@ -566,8 +573,9 @@ ${text}${assetGuide()}`,
 
   async function batchImages() {
     const base = targetShots();
-    const already = base.filter((s) => s.linked_image_id).length;
-    const shots = base.filter((s) => s.image_prompt && !s.linked_image_id);
+    const states = shotStates(base);
+    const already = states.filter((s) => s.imageReady).length;
+    const shots = states.filter((s) => s.missingImage).map((s) => s.shot);
     if (!shots.length) {
       const noPrompt = base.filter((s) => !s.image_prompt).length;
       if (already) toast.info(`没有缺失图片需要生成；已跳过 ${already} 个已有图片的镜头${noPrompt ? `，另有 ${noPrompt} 个缺图片提示词` : ''}`);
@@ -615,15 +623,13 @@ ${text}${assetGuide()}`,
 
   async function batchAudios() {
     const base = targetShots();
-    const existing = new Set(audioAssets.filter((a) => a.status === 'completed').map((a) => a.storyboard_id + ':' + a.audio_type));
     const items = [];
     let skipped = 0;
-    base.forEach((s) => {
-      [['dialogue', s.dialogue], ['narration', s.narration]].forEach(([type, raw]) => {
-        const text = String(raw || '').trim();
-        if (!text) return;
-        if (existing.has(s.id + ':' + type)) { skipped += 1; return; }
-        items.push({ shot: s, type, text });
+    shotStates(base).forEach((state) => {
+      [['dialogue', state.shot.dialogue, state.needsDialogue, state.dialogueReady], ['narration', state.shot.narration, state.needsNarration, state.narrationReady]].forEach(([type, raw, needed, ready]) => {
+        if (!needed) return;
+        if (ready) { skipped += 1; return; }
+        items.push({ shot: state.shot, type, text: String(raw || '').trim() });
       });
     });
     if (!items.length) {
@@ -647,8 +653,10 @@ ${text}${assetGuide()}`,
 
   async function batchVideos() {
     const base = targetShots();
-    const already = base.filter((s) => s.linked_video_id || s.status === 'video_ready' || s.status === 'done').length;
-    const shots = base.filter((s) => s.video_prompt && !s.linked_video_id && s.status !== 'video_ready' && s.status !== 'done');
+    const states = shotStates(base);
+    const already = states.filter((s) => s.videoReady).length;
+    const pendingRemoteShots = new Set(projectVideos.filter((v) => v.storyboard_id && v.agnes_video_id && ['queued', 'in_progress', 'remote_submitted'].includes(v.status)).map((v) => v.storyboard_id));
+    const shots = states.filter((s) => s.missingVideo && !pendingRemoteShots.has(s.shot.id)).map((s) => s.shot);
     if (!shots.length) {
       const noPrompt = base.filter((s) => !s.video_prompt).length;
       if (already) toast.info(`没有缺失视频需要生成；已跳过 ${already} 个已有视频的镜头${noPrompt ? `，另有 ${noPrompt} 个缺视频提示词` : ''}`);

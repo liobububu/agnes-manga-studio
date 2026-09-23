@@ -9,6 +9,7 @@ import { api } from '../api.js';
 import { modal, toast, empty, spinner, confirm } from '../ui.js';
 import { head, projectPicker, episodeOptions } from './helpers.js';
 import { state, onEvent, resolveProjectId, setActiveProject } from '../app.js';
+import { nextEpisodeWorkflowState } from '../workflow-state.js';
 
 const TRANSITIONS = [
   { value: 'none', label: '无' },
@@ -54,10 +55,11 @@ export default async function editor(container, params) {
   container.querySelector('#export').onclick = () => doExport();
   container.querySelector('#openreel').onclick = openInOpenReel;
 
-  // 异步视频可能在用户停留剪辑台期间完成。自动汇总，但不覆盖用户已经手工调整过的时间线。
+  // 异步媒体可能在用户停留剪辑台期间完成。仅自动刷新尚未保存、也未手工调整的自动时间线；
+  // 已保存方案可能包含人工排序/裁切，不能因为后台媒体事件把它静默覆盖。
   let refreshTimer = null;
   const scheduleLiveRefresh = () => {
-    if (dirty || !projectId) return;
+    if (dirty || planId || !projectId) return;
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(async () => {
       const r = await api.assembleEditPlan(projectId, episode);
@@ -85,11 +87,28 @@ export default async function editor(container, params) {
     el.innerHTML = spinner();
     const r = await api.editPlans(projectId, episode);
     if (!r.ok) { el.innerHTML = empty('读取失败', r.error, 'alert'); return; }
-    const existing = (r.data || [])[0];
+    const existing = planId
+      ? (r.data || []).find((p) => p.id === planId) || (r.data || [])[0]
+      : (r.data || [])[0];
     if (existing) {
       planId = existing.id;
       planName = existing.name;
-      clips = existing.clips || [];
+      // 保存方案保留人工排序/裁切；媒体本身则以当前分镜的有效版本为准。
+      // 这样旧视频/旧配音失效并重新生成后，重新打开剪辑台不会继续显示旧素材。
+      const assembled = await api.assembleEditPlan(projectId, episode);
+      const currentByStoryboard = new Map((assembled.ok ? assembled.data.clips || [] : []).filter((c) => c.storyboard_id).map((c) => [c.storyboard_id, c]));
+      const savedIds = new Set((existing.clips || []).map((c) => c.storyboard_id).filter(Boolean));
+      clips = (existing.clips || []).flatMap((saved) => {
+        if (!saved.storyboard_id) return [saved];
+        const current = currentByStoryboard.get(saved.storyboard_id);
+        if (!current) return []; // 分镜已删除：不能继续作为幽灵镜头留在旧方案
+        const duration = Number(current.duration || saved.duration || 5);
+        const trimIn = Math.min(Math.max(0, Number(saved.trim_in || 0)), Math.max(0, duration - 0.1));
+        const trimOut = Math.max(trimIn + 0.1, Math.min(Number(saved.trim_out ?? duration), duration));
+        return [{ ...saved, ...current, enabled: saved.enabled !== false, trim_in: trimIn, trim_out: trimOut }];
+      });
+      // 新增分镜追加到旧人工时间线末尾，不打乱用户已经调整好的镜头顺序。
+      clips.push(...(assembled.ok ? assembled.data.clips || [] : []).filter((c) => c.storyboard_id && !savedIds.has(c.storyboard_id)));
       transitions = existing.transitions || [];
       dirty = false;
     } else {
@@ -276,37 +295,21 @@ export default async function editor(container, params) {
   }
 
   async function nextEpisodeTarget() {
-    const r = await api.storyboards(projectId);
-    if (!r.ok) return null;
-    const all = r.data || [];
-    const eps = [...new Set(all.map((s) => Number(s.episode_number) || 1))].sort((a, b) => a - b);
-    const next = eps.find((ep) => ep > episode);
-    if (!next) {
-      const scripts = await api.scripts(projectId);
-      const outlines = scripts.ok ? (scripts.data || []).filter((s) => s.script_type === 'episode_outline').sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))) : [];
-      let plannedNext = null;
-      for (const outline of outlines) {
-        try {
-          const text = String(outline.content || '');
-          const m = text.match(/\[[\s\S]*\]/);
-          const arr = JSON.parse(m ? m[0] : text);
-          if (!Array.isArray(arr)) continue;
-          const eps = arr.map((x, i) => Number(x?.episode ?? x?.episode_number ?? i + 1)).filter((n) => n > episode).sort((a, b) => a - b);
-          if (eps.length) { plannedNext = eps[0]; break; }
-        } catch {}
-      }
-      const target = plannedNext || episode + 1;
-      return { page: 'scripts', params: { project: projectId, tab: 'episode_script', episode: String(target) }, label: `第 ${target} 集剧本` };
-    }
-    const shots = all.filter((s) => (Number(s.episode_number) || 1) === next);
-    const imagesDone = shots.length > 0 && shots.every((s) => Boolean(s.linked_image_id));
-    const videosDone = shots.length > 0 && shots.every((s) => Boolean(s.linked_video_id) || s.status === 'video_ready' || s.status === 'done');
-    const plans = await api.editPlans(projectId, next);
-    const hasPlan = plans.ok && (plans.data || []).length > 0;
-    if (!shots.length) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集分镜` };
-    if (!imagesDone) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集补齐分镜图` };
-    if (!videosDone) return { page: 'storyboards', params: { project: projectId, episode: String(next) }, label: `第 ${next} 集补齐视频` };
-    return { page: 'editor', params: { project: projectId, episode: String(next) }, label: hasPlan ? `第 ${next} 集继续剪辑` : `第 ${next} 集剪辑` };
+    const [storyboards, scripts, images, videos, audios, plans] = await Promise.all([
+      api.storyboards(projectId), api.scripts(projectId), api.images(projectId), api.videos(projectId), api.audioAssets(projectId), api.editPlans(projectId, null),
+    ]);
+    if (!storyboards.ok) return null;
+    const next = nextEpisodeWorkflowState({
+      projectId,
+      scripts: scripts.ok ? scripts.data || [] : [],
+      storyboards: storyboards.data || [],
+      images: images.ok ? images.data || [] : [],
+      videos: videos.ok ? videos.data || [] : [],
+      audios: audios.ok ? audios.data || [] : [],
+      plans: plans.ok ? plans.data || [] : [],
+    }, episode);
+    if (!next) return null;
+    return { ...next.next, label: `第 ${next.episode} 集${next.next.label}` };
   }
 
   async function save() {

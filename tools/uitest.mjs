@@ -425,6 +425,83 @@ group('2.5 判定前后端一致');
   }
 }
 
+
+ 
+// ── 统一生产状态计算器：所有主链入口必须消费同一套规则 ──────────────
+group('统一生产状态计算器');
+{
+  const { plannedEpisodes, shotWorkflowState, episodeWorkflowState, projectWorkflowState, nextEpisodeWorkflowState } =
+    await import(pathToFileURL(path.join(PUB, 'js', 'workflow-state.js')).href);
+
+  const pid = 'p1';
+  const outline = { id: 'outline', project_id: pid, script_type: 'episode_outline', content: JSON.stringify([{ episode: 1 }, { episode: 3 }, { episode: 5 }]) };
+  const script = (ep) => ({ id: `script-${ep}`, project_id: pid, script_type: 'episode_script', episode_number: ep });
+  const shot = (ep, id = `shot-${ep}`, extra = {}) => ({ id, project_id: pid, episode_number: ep, linked_image_id: `img-${ep}`, linked_video_id: `vid-${ep}`, dialogue: '', narration: '', ...extra });
+  const image = (ep, readable = true) => ({ id: `img-${ep}`, project_id: pid, media_readable: readable });
+  const video = (ep, readable = true) => ({ id: `vid-${ep}`, project_id: pid, media_readable: readable });
+  const base = { projectId: pid, scripts: [outline], storyboards: [], images: [], videos: [], audios: [], plans: [] };
+
+  const shotMedia = shotWorkflowState(shot(3, 'shot-3', { image_prompt: '画面', video_prompt: '动作', dialogue: '台词', narration: '旁白' }), { images: [image(3, false)], videos: [video(3)], audios: [{ storyboard_id: 'shot-3', audio_type: 'dialogue', status: 'completed', media_readable: true }] });
+  ok('镜头级状态统一识别失效图片', shotMedia.missingImage === true && shotMedia.imageReady === false);
+  ok('镜头级状态统一识别可用视频', shotMedia.videoReady === true && shotMedia.missingVideo === false);
+  ok('镜头级状态统一识别缺失旁白配音', shotMedia.dialogueReady === true && shotMedia.missingNarration === true && shotMedia.complete === false);
+
+  const eps = plannedEpisodes(pid, [outline, script(3)], [shot(7)]);
+  ok('计划集数保留跳号并合并脚本/分镜来源', JSON.stringify(eps) === JSON.stringify([1, 3, 5, 7]), JSON.stringify(eps));
+
+  const scriptOnly = episodeWorkflowState({ ...base, episode: 3, scripts: [outline, script(3)] });
+  ok('已有脚本无分镜 → 分镜', scriptOnly.next.page === 'storyboards' && scriptOnly.next.label === '分镜');
+  ok('已有脚本无分镜携带 source_script', scriptOnly.next.params.source_script === 'script-3');
+
+  const invalidImage = episodeWorkflowState({ ...base, episode: 3, scripts: [outline, script(3)], storyboards: [shot(3)], images: [image(3, false)], videos: [video(3)] });
+  ok('失效图片媒体不能算完成', invalidImage.imagesDone === false && invalidImage.next.label === '补齐分镜图');
+
+  const invalidVideo = episodeWorkflowState({ ...base, episode: 3, scripts: [outline, script(3)], storyboards: [shot(3)], images: [image(3)], videos: [video(3, false)] });
+  ok('失效视频媒体不能算完成', invalidVideo.imagesDone === true && invalidVideo.videosDone === false && invalidVideo.next.label === '补齐视频');
+
+  const voicedShot = shot(3, 'shot-3', { dialogue: '你好', narration: '旁白' });
+  const missingAudio = episodeWorkflowState({ ...base, episode: 3, scripts: [outline, script(3)], storyboards: [voicedShot], images: [image(3)], videos: [video(3)], audios: [{ id: 'a1', project_id: pid, storyboard_id: 'shot-3', audio_type: 'dialogue', status: 'completed', media_readable: true }] });
+  ok('缺任一必需配音轨 → 补齐配音', missingAudio.audioDone === false && missingAudio.next.label === '补齐配音');
+
+  const audios = [
+    { id: 'a1', project_id: pid, storyboard_id: 'shot-3', audio_type: 'dialogue', status: 'completed', media_readable: true },
+    { id: 'a2', project_id: pid, storyboard_id: 'shot-3', audio_type: 'narration', status: 'completed', media_readable: true },
+  ];
+  const ready = { ...base, episode: 3, scripts: [outline, script(3)], storyboards: [voicedShot], images: [image(3)], videos: [video(3)], audios };
+  const noPlan = episodeWorkflowState(ready);
+  ok('素材齐全无剪辑方案 → 剪辑', noPlan.next.page === 'editor' && noPlan.next.label === '剪辑');
+  const withPlan = episodeWorkflowState({ ...ready, plans: [{ id: 'plan-3', project_id: pid, episode_number: 3 }] });
+  ok('已有剪辑方案 → 继续剪辑', withPlan.hasPlan === true && withPlan.next.label === '继续剪辑');
+
+  const nextData = { projectId: pid, scripts: [outline, script(1), script(3), script(5)], storyboards: [shot(1), shot(3)], images: [image(1), image(3)], videos: [video(1), video(3)], audios: [], plans: [{ id: 'plan-1', project_id: pid, episode_number: 1 }] };
+  const next = nextEpisodeWorkflowState(nextData, 1);
+  ok('下一集定位遵循计划集数而非 current+1', next?.episode === 3, String(next?.episode));
+  const after3 = nextEpisodeWorkflowState(nextData, 3);
+  ok('跳号下一集定位可从 3 直接到 5', after3?.episode === 5, String(after3?.episode));
+
+  const current = projectWorkflowState(nextData).current;
+  ok('项目首页当前集也由统一计算器选择', current.episode === 3);
+
+  const projectsSrc = read(path.join(PUB, 'js', 'pages', 'projects.js'));
+  const editorSrc = read(path.join(PUB, 'js', 'pages', 'editor.js'));
+  const storyboardsSrc = read(path.join(PUB, 'js', 'pages', 'storyboards.js'));
+  const videosSrc = read(path.join(PUB, 'js', 'pages', 'videos.js'));
+  ok('项目首页消费 projectWorkflowState', /projectWorkflowState\(/.test(projectsSrc));
+  ok('剪辑台消费 nextEpisodeWorkflowState', /nextEpisodeWorkflowState\(/.test(editorSrc));
+  ok('剪辑台重开保存方案时重新汇总当前媒体', editorSrc.includes('const assembled = await api.assembleEditPlan(projectId, episode)') && editorSrc.includes('currentByStoryboard'));
+  ok('剪辑台媒体刷新保留人工启用状态和裁切', editorSrc.includes('enabled: saved.enabled !== false') && editorSrc.includes('trim_in: trimIn') && editorSrc.includes('trim_out: trimOut'));
+  ok('剪辑台指定方案加载不会总退回第一条', editorSrc.includes('find((p) => p.id === planId)'));
+  ok('剪辑台重开会清理已删除分镜', editorSrc.includes('if (!current) return []'));
+  ok('剪辑台重开会追加新增分镜且不打乱旧人工顺序', editorSrc.includes('clips.push(...(assembled.ok ? assembled.data.clips || [] : []).filter'));
+  ok('分镜页消费 episodeWorkflowState', /episodeWorkflowState\(/.test(storyboardsSrc));
+  ok('分镜页重开会恢复 interrupted 批次展示', storyboardsSrc.includes("['running', 'pending', 'interrupted'].includes(j.status)"));
+  ok('分镜页继续图片只提交 missingImage', storyboardsSrc.includes('states.filter((s) => s.missingImage).map((s) => s.shot)'));
+  ok('分镜页继续视频跳过远端在途镜头', storyboardsSrc.includes('pendingRemoteShots'));
+  ok('中断批次有明确继续补缺失提示', read(path.join(PUB, 'js', 'pages', 'helpers.js')).includes('上次运行中断，可继续补缺失项'));
+  ok('视频页带分镜上下文时只接受当前 linked_image_id', videosSrc.includes("linkedStoryboard?.linked_image_id === incoming.id"));
+  ok('分镜批量视频只从 linked_image_id 取当前分镜图', storyboardsSrc.includes("const img = s.linked_image_id ? (window.__imgMap?.[s.linked_image_id] || null) : null"));
+}
+
 // ── SSE 事件：后端 emit 的，前端必须订阅 ────────────────────
 // 踩过的坑：后端加了 storyboard 事件并回填了分镜状态，
 // 前端压根没 addEventListener，功能等于不存在，而且测试全绿看不出来。

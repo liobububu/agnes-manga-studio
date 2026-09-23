@@ -886,8 +886,302 @@ group('剪辑台');
   eq('缺视频的镜头回退到计划值', asm.data.clips[2].duration, 4);
   eq('缺视频的镜头不标不一致', asm.data.clips[2].duration_mismatch, false);
 
+  // 1b) 已保存方案 → 旧媒体失效 → 重新生成 → 时间线重建 → 导出必须使用新媒体
+  const regenEp = 8;
+  await api('POST', '/api/storyboards', { rows: [{
+    project_id: PROJECT_ID, episode_number: regenEp, shot_number: 1, sort_order: 1, duration_seconds: 4,
+    image_prompt: 'regen image', video_prompt: 'regen video', dialogue: '旧台词', narration: '旧旁白',
+  }] });
+  const regenShot = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data[0];
+
+  const oldImage = await api('POST', '/api/images', { project_id: PROJECT_ID, storyboard_id: regenShot.id, name: '旧图片', remote_url: 'https://example.com/old-image.png' });
+  eq('旧图片先回填到分镜', (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data[0].linked_image_id, oldImage.data.id);
+
+  await api('POST', '/api/videos', { project_id: PROJECT_ID, storyboard_id: regenShot.id, prompt: 'old video', mode: 'text_to_video' });
+  let regenVideos = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  const oldVideo = regenVideos.find((v) => v.storyboard_id === regenShot.id);
+  await api('POST', `/api/videos/${oldVideo.id}/refresh`, {});
+  await api('POST', `/api/videos/${oldVideo.id}/refresh`, {});
+
+  const audioDir = path.join(HOME, 'assets', 'audios');
+  fs.mkdirSync(audioDir, { recursive: true });
+  const oldDialogueFile = path.join(audioDir, 'old-dialogue.mp3');
+  const oldNarrationFile = path.join(audioDir, 'old-narration.mp3');
+  fs.writeFileSync(oldDialogueFile, Buffer.from('old-dialogue'));
+  fs.writeFileSync(oldNarrationFile, Buffer.from('old-narration'));
+  const oldDialogue = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: regenShot.id, audio_type: 'dialogue', text: '旧台词', url: '/assets/audios/old-dialogue.mp3', local_file: oldDialogueFile, status: 'completed' });
+  const oldNarration = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: regenShot.id, audio_type: 'narration', text: '旧旁白', url: '/assets/audios/old-narration.mp3', local_file: oldNarrationFile, status: 'completed' });
+
+  const oldAsm = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  const savedRegenPlan = await api('POST', '/api/edit-plans', { project_id: PROJECT_ID, episode_number: regenEp, name: '重生成回归', clips: oldAsm.data.clips, transitions: [] });
+  const regenPlanId = savedRegenPlan.data.id;
+  eq('保存方案记录旧视频', savedRegenPlan.data.clips[0].video_id, oldVideo.id);
+  eq('保存方案记录旧台词配音', savedRegenPlan.data.clips[0].dialogue_audio.id, oldDialogue.data.id);
+  eq('保存方案记录旧旁白配音', savedRegenPlan.data.clips[0].narration_audio.id, oldNarration.data.id);
+
+  await api('DELETE', `/api/images/${oldImage.data.id}`);
+  await api('DELETE', `/api/videos/${oldVideo.id}`);
+  fs.unlinkSync(oldDialogueFile);
+  fs.unlinkSync(oldNarrationFile);
+  const staleAsm = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  eq('旧视频失效后时间线标记缺视频', staleAsm.data.stats.missing, 1);
+  eq('旧配音失效后时间线标记缺配音', staleAsm.data.stats.audio_missing, 1);
+
+  const newImage = await api('POST', '/api/images', { project_id: PROJECT_ID, storyboard_id: regenShot.id, name: '新图片', remote_url: 'https://example.com/new-image.png' });
+  eq('重新生成图片后分镜改绑新图片', (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data[0].linked_image_id, newImage.data.id);
+
+  await api('POST', '/api/videos', { project_id: PROJECT_ID, storyboard_id: regenShot.id, prompt: 'new video', mode: 'text_to_video' });
+  regenVideos = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  const newVideo = regenVideos.find((v) => v.storyboard_id === regenShot.id && v.id !== oldVideo.id);
+  await api('POST', `/api/videos/${newVideo.id}/refresh`, {});
+  await api('POST', `/api/videos/${newVideo.id}/refresh`, {});
+  const newDialogue = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: regenShot.id, audio_type: 'dialogue', text: '新台词', url: 'https://example.com/new-dialogue.mp3', status: 'completed' });
+  const newNarration = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: regenShot.id, audio_type: 'narration', text: '新旁白', url: 'https://example.com/new-narration.mp3', status: 'completed' });
+
+  const rebuilt = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  eq('时间线重建使用新视频', rebuilt.data.clips[0].video_id, newVideo.id);
+  eq('时间线重建使用新台词配音', rebuilt.data.clips[0].dialogue_audio.id, newDialogue.data.id);
+  eq('时间线重建使用新旁白配音', rebuilt.data.clips[0].narration_audio.id, newNarration.data.id);
+  eq('重建后视频不再缺失', rebuilt.data.stats.missing, 0);
+  eq('重建后配音不再缺失', rebuilt.data.stats.audio_missing, 0);
+
+  // 不手动覆盖已保存方案，直接导出；导出层必须把旧缓存引用刷新到当前有效媒体。
+  const regenExport = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  eq('旧方案重新生成后仍可导出', regenExport.status, 200);
+  eq('导出视频轨改用新视频', regenExport.data.clips[0].video_id, newVideo.id);
+  eq('导出台词轨改用新配音', regenExport.data.clips[0].dialogue_audio.id, newDialogue.data.id);
+  eq('导出旁白轨改用新配音', regenExport.data.clips[0].narration_audio.id, newNarration.data.id);
+  ok('导出不再引用旧视频', !JSON.stringify(regenExport.data).includes(oldVideo.id));
+  ok('导出不再引用旧配音', !JSON.stringify(regenExport.data).includes(oldDialogue.data.id) && !JSON.stringify(regenExport.data).includes(oldNarration.data.id));
+
+  // 1c) 新媒体重新绑定后再次保存：人工顺序、启用状态、裁切点和最新媒体同时持久化。
+  await api('POST', '/api/storyboards', { rows: [{
+    project_id: PROJECT_ID, episode_number: regenEp, shot_number: 2, sort_order: 2, duration_seconds: 6,
+    image_prompt: 'regen image 2', video_prompt: 'regen video 2', dialogue: '第二镜台词', narration: '',
+  }] });
+  const regenShots = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data;
+  const regenShot2 = regenShots.find((s) => s.shot_number === 2);
+  await api('POST', '/api/videos', { project_id: PROJECT_ID, storyboard_id: regenShot2.id, prompt: 'new video 2', mode: 'text_to_video' });
+  regenVideos = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  const newVideo2 = regenVideos.find((v) => v.storyboard_id === regenShot2.id);
+  await api('POST', `/api/videos/${newVideo2.id}/refresh`, {});
+  await api('POST', `/api/videos/${newVideo2.id}/refresh`, {});
+  const newDialogue2 = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: regenShot2.id, audio_type: 'dialogue', text: '第二镜台词', url: 'https://example.com/new-dialogue-2.mp3', status: 'completed' });
+  const rebuilt2 = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  const current1 = rebuilt2.data.clips.find((c) => c.storyboard_id === regenShot.id);
+  const current2 = rebuilt2.data.clips.find((c) => c.storyboard_id === regenShot2.id);
+  const resaved = await api('PUT', `/api/edit-plans/${regenPlanId}`, {
+    clips: [
+      { ...current2, enabled: false, trim_in: 1.2, trim_out: 3.8 },
+      { ...current1, enabled: true, trim_in: 0.4, trim_out: 2.6 },
+    ],
+    transitions: [{ after_index: 0, type: 'fade' }],
+  });
+  eq('重新绑定后再次保存成功', resaved.status, 200);
+  eq('再次保存保留人工镜头顺序', resaved.data.clips[0].storyboard_id, regenShot2.id);
+  eq('再次保存保留禁用状态', resaved.data.clips[0].enabled, false);
+  eq('再次保存保留第一镜裁切入点', resaved.data.clips[1].trim_in, 0.4);
+  eq('再次保存保留第一镜裁切出点', resaved.data.clips[1].trim_out, 2.6);
+  eq('再次保存记录最新视频引用', resaved.data.clips[1].video_id, newVideo.id);
+  eq('再次保存记录最新配音引用', resaved.data.clips[1].dialogue_audio.id, newDialogue.data.id);
+
+  const reopenedPlans = await api('GET', `/api/edit-plans?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  const reopened = reopenedPlans.data.find((p) => p.id === regenPlanId);
+  eq('重新打开保留人工顺序', reopened.clips[0].storyboard_id, regenShot2.id);
+  eq('重新打开保留启用状态', reopened.clips[0].enabled, false);
+  eq('重新打开保留裁切点', reopened.clips[0].trim_in, 1.2);
+  eq('重新打开保留最新第二镜视频', reopened.clips[0].video_id, newVideo2.id);
+  eq('重新打开保留最新第二镜配音', reopened.clips[0].dialogue_audio.id, newDialogue2.data.id);
+
+  const resavedExport = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  eq('再次保存后导出成功', resavedExport.status, 200);
+  eq('导出继续保留人工顺序', resavedExport.data.plan.clips[0].storyboard_id, regenShot2.id);
+  eq('导出方案继续保留禁用状态', resavedExport.data.plan.clips[0].enabled, false);
+  eq('导出方案继续保留裁切点', resavedExport.data.plan.clips[1].trim_in, 0.4);
+  eq('导出有效轨仅包含启用镜头', resavedExport.data.clips.length, 1);
+  eq('导出有效轨使用最新第一镜视频', resavedExport.data.clips[0].video_id, newVideo.id);
+  eq('导出有效轨使用最新第一镜配音', resavedExport.data.clips[0].dialogue_audio.id, newDialogue.data.id);
+  ok('再次保存导出仍不引用旧媒体', !JSON.stringify(resavedExport.data).includes(oldVideo.id) && !JSON.stringify(resavedExport.data).includes(oldDialogue.data.id) && !JSON.stringify(resavedExport.data).includes(oldNarration.data.id));
+
+  // 1d) 重复保存 → 重新打开 → 连续导出：必须幂等，不能追加重复镜头或恢复旧媒体。
+  const stableClips = reopened.clips.map((c) => ({ ...c }));
+  const repeatSave1 = await api('PUT', `/api/edit-plans/${regenPlanId}`, { clips: stableClips, transitions: reopened.transitions || [] });
+  const repeatSave2 = await api('PUT', `/api/edit-plans/${regenPlanId}`, { clips: repeatSave1.data.clips, transitions: repeatSave1.data.transitions || [] });
+  eq('第一次重复保存镜头数不变', repeatSave1.data.clips.length, stableClips.length);
+  eq('第二次重复保存镜头数不变', repeatSave2.data.clips.length, stableClips.length);
+  eq('重复保存没有追加第一镜', repeatSave2.data.clips.filter((c) => c.storyboard_id === regenShot.id).length, 1);
+  eq('重复保存没有追加第二镜', repeatSave2.data.clips.filter((c) => c.storyboard_id === regenShot2.id).length, 1);
+  eq('重复保存保留人工顺序', repeatSave2.data.clips[0].storyboard_id, regenShot2.id);
+  eq('重复保存保留禁用状态', repeatSave2.data.clips[0].enabled, false);
+  eq('重复保存保留第二镜裁切入点', repeatSave2.data.clips[0].trim_in, 1.2);
+  eq('重复保存保留第二镜裁切出点', repeatSave2.data.clips[0].trim_out, 3.8);
+  eq('重复保存保留第一镜裁切入点', repeatSave2.data.clips[1].trim_in, 0.4);
+  eq('重复保存保留第一镜裁切出点', repeatSave2.data.clips[1].trim_out, 2.6);
+
+  const reopenedAgain = (await api('GET', `/api/edit-plans?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((p) => p.id === regenPlanId);
+  eq('重复保存后重新打开镜头数稳定', reopenedAgain.clips.length, stableClips.length);
+  eq('重复保存后重新打开人工顺序稳定', reopenedAgain.clips[0].storyboard_id, regenShot2.id);
+  eq('重复保存后重新打开禁用状态稳定', reopenedAgain.clips[0].enabled, false);
+  eq('重复保存后重新打开第一镜仍用最新视频', reopenedAgain.clips[1].video_id, newVideo.id);
+  eq('重复保存后重新打开第一镜仍用最新配音', reopenedAgain.clips[1].dialogue_audio.id, newDialogue.data.id);
+  ok('重复保存后方案不混入旧媒体', !JSON.stringify(reopenedAgain).includes(oldVideo.id) && !JSON.stringify(reopenedAgain).includes(oldDialogue.data.id) && !JSON.stringify(reopenedAgain).includes(oldNarration.data.id));
+
+  const exportAgain1 = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  const exportAgain2 = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  eq('连续导出结果镜头数一致', exportAgain2.data.clips.length, exportAgain1.data.clips.length);
+  eq('连续导出方案镜头数不膨胀', exportAgain2.data.plan.clips.length, stableClips.length);
+  eq('连续导出人工顺序一致', exportAgain2.data.plan.clips[0].storyboard_id, exportAgain1.data.plan.clips[0].storyboard_id);
+  eq('连续导出禁用状态一致', exportAgain2.data.plan.clips[0].enabled, false);
+  eq('连续导出裁切点一致', exportAgain2.data.plan.clips[1].trim_in, 0.4);
+  eq('连续导出最新视频一致', exportAgain2.data.clips[0].video_id, newVideo.id);
+  eq('连续导出最新配音一致', exportAgain2.data.clips[0].dialogue_audio.id, newDialogue.data.id);
+  ok('连续导出均不混入旧媒体', !JSON.stringify(exportAgain1.data).includes(oldVideo.id) && !JSON.stringify(exportAgain2.data).includes(oldVideo.id) && !JSON.stringify(exportAgain1.data).includes(oldDialogue.data.id) && !JSON.stringify(exportAgain2.data).includes(oldDialogue.data.id));
+
+  // 1e) 分镜重新编号/调整顺序后，旧剪辑方案必须始终按 storyboard_id 映射，不能按 shot_number 错配人工编辑。
+  await api('PUT', `/api/storyboards/${regenShot.id}`, { shot_number: 20, sort_order: 20 });
+  await api('PUT', `/api/storyboards/${regenShot2.id}`, { shot_number: 10, sort_order: 10 });
+  const reorderedAsm = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  eq('分镜重排后自动时间线按新顺序', reorderedAsm.data.clips[0].storyboard_id, regenShot2.id);
+  eq('分镜重排后第一镜新编号生效', reorderedAsm.data.clips[0].shot_number, 10);
+  eq('分镜重排后第二镜新编号生效', reorderedAsm.data.clips[1].shot_number, 20);
+
+  const reorderedExport = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  eq('旧方案仍保持人工顺序而非重新按编号排序', reorderedExport.data.plan.clips[0].storyboard_id, regenShot2.id);
+  eq('重编号后禁用状态仍绑定原 storyboard', reorderedExport.data.plan.clips[0].enabled, false);
+  eq('重编号后第二镜裁切入点不串镜', reorderedExport.data.plan.clips[0].trim_in, 1.2);
+  eq('重编号后第二镜裁切出点不串镜', reorderedExport.data.plan.clips[0].trim_out, 3.8);
+  eq('重编号后第一镜裁切入点不串镜', reorderedExport.data.plan.clips[1].trim_in, 0.4);
+  eq('重编号后第一镜裁切出点不串镜', reorderedExport.data.plan.clips[1].trim_out, 2.6);
+  eq('重编号后第一镜仍绑定自己的最新视频', reorderedExport.data.plan.clips[1].video_id, newVideo.id);
+  eq('重编号后第二镜仍绑定自己的最新视频', reorderedExport.data.plan.clips[0].video_id, newVideo2.id);
+  eq('重编号后第一镜仍绑定自己的配音', reorderedExport.data.plan.clips[1].dialogue_audio.id, newDialogue.data.id);
+  eq('重编号后第二镜仍绑定自己的配音', reorderedExport.data.plan.clips[0].dialogue_audio.id, newDialogue2.data.id);
+  ok('重编号导出不混入旧媒体', !JSON.stringify(reorderedExport.data).includes(oldVideo.id) && !JSON.stringify(reorderedExport.data).includes(oldDialogue.data.id) && !JSON.stringify(reorderedExport.data).includes(oldNarration.data.id));
+
+  const reorderedResave = await api('PUT', `/api/edit-plans/${regenPlanId}`, { clips: reorderedExport.data.plan.clips, transitions: reorderedExport.data.plan.transitions || [] });
+  const reorderedReopen = (await api('GET', `/api/edit-plans?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((p) => p.id === regenPlanId);
+  eq('重编号后再次保存镜头数不变', reorderedReopen.clips.length, reorderedResave.data.clips.length);
+  eq('重编号后再次打开仍按 storyboard_id 保持人工顺序', reorderedReopen.clips[0].storyboard_id, regenShot2.id);
+  eq('重编号后再次打开第一镜裁切仍正确', reorderedReopen.clips[1].trim_in, 0.4);
+
+  // 1f) 新增 + 删除 + 重编号混合变化：当前 storyboard 集合变化后，旧方案视图应清幽灵镜头并追加新镜头。
+  await api('POST', '/api/storyboards', { rows: [{
+    project_id: PROJECT_ID, episode_number: regenEp, shot_number: 15, sort_order: 15, duration_seconds: 5,
+    image_prompt: 'mixed new image', video_prompt: 'mixed new video', dialogue: '新增镜头台词', narration: '',
+  }] });
+  const mixedShots = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data;
+  const addedShot = mixedShots.find((s) => s.shot_number === 15);
+  await api('POST', '/api/videos', { project_id: PROJECT_ID, storyboard_id: addedShot.id, prompt: 'mixed new video', mode: 'text_to_video' });
+  const mixedVideos = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  const addedVideo = mixedVideos.find((v) => v.storyboard_id === addedShot.id);
+  await api('POST', `/api/videos/${addedVideo.id}/refresh`, {});
+  await api('POST', `/api/videos/${addedVideo.id}/refresh`, {});
+  const addedDialogue = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: addedShot.id, audio_type: 'dialogue', text: '新增镜头台词', url: 'https://example.com/mixed-added.mp3', status: 'completed' });
+  await api('DELETE', `/api/storyboards/${regenShot2.id}`);
+  await api('PUT', `/api/storyboards/${regenShot.id}`, { shot_number: 30, sort_order: 30 });
+
+  const mixedAssemble = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  eq('混合变化后当前分镜只剩两镜', mixedAssemble.data.clips.length, 2);
+  ok('混合变化后自动时间线包含新增镜头', mixedAssemble.data.clips.some((c) => c.storyboard_id === addedShot.id));
+  ok('混合变化后自动时间线不含删除镜头', !mixedAssemble.data.clips.some((c) => c.storyboard_id === regenShot2.id));
+
+  const mixedExportBeforeResave = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  ok('未重开旧方案直接导出也清理删除镜头', !mixedExportBeforeResave.data.plan.clips.some((c) => c.storyboard_id === regenShot2.id));
+  eq('未重开直接导出仍保留原镜头裁切', mixedExportBeforeResave.data.plan.clips.find((c) => c.storyboard_id === regenShot.id).trim_in, 0.4);
+
+  // 模拟 editor.load 的合并规则：存量按 storyboard_id 刷新，删除项丢弃，新增项追加末尾。
+  const currentMixed = new Map(mixedAssemble.data.clips.map((c) => [c.storyboard_id, c]));
+  const savedMixedIds = new Set(reorderedReopen.clips.map((c) => c.storyboard_id).filter(Boolean));
+  const mergedMixed = reorderedReopen.clips.flatMap((saved) => {
+    if (!saved.storyboard_id) return [saved];
+    const current = currentMixed.get(saved.storyboard_id);
+    if (!current) return [];
+    const duration = Number(current.duration || saved.duration || 5);
+    const trimIn = Math.min(Math.max(0, Number(saved.trim_in || 0)), Math.max(0, duration - 0.1));
+    const trimOut = Math.max(trimIn + 0.1, Math.min(Number(saved.trim_out ?? duration), duration));
+    return [{ ...saved, ...current, enabled: saved.enabled !== false, trim_in: trimIn, trim_out: trimOut }];
+  });
+  mergedMixed.push(...mixedAssemble.data.clips.filter((c) => c.storyboard_id && !savedMixedIds.has(c.storyboard_id)));
+  eq('混合合并后镜头集合严格等于当前分镜集合', mergedMixed.length, mixedAssemble.data.clips.length);
+  eq('混合合并后原镜头保持人工裁切', mergedMixed.find((c) => c.storyboard_id === regenShot.id).trim_in, 0.4);
+  eq('混合合并后新增镜头追加进入旧方案', mergedMixed[mergedMixed.length - 1].storyboard_id, addedShot.id);
+  ok('混合合并后删除镜头彻底消失', !mergedMixed.some((c) => c.storyboard_id === regenShot2.id));
+
+  const mixedSave = await api('PUT', `/api/edit-plans/${regenPlanId}`, { clips: mergedMixed, transitions: reorderedReopen.transitions || [] });
+  const mixedReopen = (await api('GET', `/api/edit-plans?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((p) => p.id === regenPlanId);
+  eq('混合变化保存后镜头数稳定', mixedReopen.clips.length, 2);
+  eq('混合变化重新打开原镜头裁切不漂移', mixedReopen.clips.find((c) => c.storyboard_id === regenShot.id).trim_in, 0.4);
+  eq('混合变化重新打开新增镜头视频正确', mixedReopen.clips.find((c) => c.storyboard_id === addedShot.id).video_id, addedVideo.id);
+  eq('混合变化重新打开新增镜头配音正确', mixedReopen.clips.find((c) => c.storyboard_id === addedShot.id).dialogue_audio.id, addedDialogue.data.id);
+
+  const mixedFinalExport = await api('GET', `/api/edit-plans/${regenPlanId}/export`);
+  eq('混合变化最终导出镜头集合稳定', mixedFinalExport.data.plan.clips.length, 2);
+  ok('混合变化最终导出无删除 storyboard', !JSON.stringify(mixedFinalExport.data).includes(regenShot2.id));
+  ok('混合变化最终导出包含新增 storyboard', JSON.stringify(mixedFinalExport.data).includes(addedShot.id));
+
+  // 1g) 分镜生产内容修改：旧媒体关联必须失效，但历史素材仍保留。
+  const contentBefore = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((s) => s.id === addedShot.id);
+  ok('内容变更前新增镜头已有关联视频', !!contentBefore.linked_video_id);
+  const dialogueEdit = await api('PUT', `/api/storyboards/${addedShot.id}`, { dialogue: '修改后的新台词' });
+  eq('修改台词会清当前配音关联', dialogueEdit.data.linked_audio_id, '');
+  eq('修改台词不会误清当前视频', dialogueEdit.data.linked_video_id, addedVideo.id);
+
+  const videoEdit = await api('PUT', `/api/storyboards/${addedShot.id}`, { video_prompt: '修改后的全新视频提示词' });
+  eq('修改视频提示词会清当前视频关联', videoEdit.data.linked_video_id, '');
+  ok('修改视频提示词不会误清图片关联字段', 'linked_image_id' in videoEdit.data);
+
+  const imageEdit = await api('PUT', `/api/storyboards/${regenShot.id}`, { image_prompt: '修改后的全新图片提示词' });
+  eq('修改图片提示词会清当前图片关联', imageEdit.data.linked_image_id, '');
+  eq('修改图片提示词同时清旧视频关联', imageEdit.data.linked_video_id, '');
+  eq('修改图片提示词状态回退 draft', imageEdit.data.status, 'draft');
+
+  const historicalVideos = (await api('GET', `/api/videos?project_id=${PROJECT_ID}`)).data;
+  ok('内容变更后历史视频仍保留在素材库', historicalVideos.some((v) => v.id === addedVideo.id));
+  const historicalAudios = (await api('GET', `/api/audio-assets?project_id=${PROJECT_ID}`)).data;
+  ok('内容变更后历史配音仍保留在素材库', historicalAudios.some((a) => a.id === addedDialogue.data.id));
+
+  const contentChangedAsm = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${regenEp}`);
+  const changedAddedClip = contentChangedAsm.data.clips.find((c) => c.storyboard_id === addedShot.id);
+  eq('内容变更后自动时间线不再使用失效视频', changedAddedClip.video_id, '');
+  eq('内容变更后自动时间线标记缺视频', changedAddedClip.missing, true);
+
+  // 1h) 图片/对白/旁白乱序完成：新版本先完成，旧版本后到，旧结果不得抢回当前关联。
+  const raceShot = (await api('POST', '/api/storyboards', { project_id: PROJECT_ID, episode_number: regenEp, shot_number: 99, sort_order: 99, image_prompt: 'race image old', video_prompt: 'race video old', dialogue: 'race dialogue old', narration: 'race narration old', duration_seconds: 5 })).data;
+  const oldImageRev = raceShot.image_revision, oldDialogueRev = raceShot.dialogue_revision, oldNarrationRev = raceShot.narration_revision;
+  const raceEdited = (await api('PUT', `/api/storyboards/${raceShot.id}`, { image_prompt: 'race image new', video_prompt: 'race video new', dialogue: 'race dialogue new', narration: 'race narration new' })).data;
+  ok('乱序测试图片版本已推进', raceEdited.image_revision > oldImageRev);
+  ok('乱序测试对白版本已推进', raceEdited.dialogue_revision > oldDialogueRev);
+  ok('乱序测试旁白版本已推进', raceEdited.narration_revision > oldNarrationRev);
+  const newImgRace = await api('POST', '/api/images', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: raceEdited.image_revision, name: 'race-new-image', url: '/assets/images/race-new.png' });
+  const oldImgRace = await api('POST', '/api/images', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: oldImageRev, name: 'race-old-image', url: '/assets/images/race-old.png' });
+  let raceCurrent = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((s) => s.id === raceShot.id);
+  eq('旧图片迟到不会覆盖新图片', raceCurrent.linked_image_id, newImgRace.data.id);
+  ok('迟到旧图片仍保留历史素材', (await api('GET', `/api/images?project_id=${PROJECT_ID}`)).data.some((a) => a.id === oldImgRace.data.id));
+  const newDialogueRace = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: raceEdited.dialogue_revision, audio_type: 'dialogue', name: 'race-new-dialogue', url: 'https://example.com/race-new-dialogue.mp3' });
+  const oldDialogueRace = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: oldDialogueRev, audio_type: 'dialogue', name: 'race-old-dialogue', url: 'https://example.com/race-old-dialogue.mp3' });
+  const newNarrationRace = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: raceEdited.narration_revision, audio_type: 'narration', name: 'race-new-narration', url: 'https://example.com/race-new-narration.mp3' });
+  const oldNarrationRace = await api('POST', '/api/audio-assets', { project_id: PROJECT_ID, storyboard_id: raceShot.id, storyboard_revision: oldNarrationRev, audio_type: 'narration', name: 'race-old-narration', url: 'https://example.com/race-old-narration.mp3' });
+  raceCurrent = (await api('GET', `/api/storyboards?project_id=${PROJECT_ID}&episode=${regenEp}`)).data.find((s) => s.id === raceShot.id);
+  eq('旧对白迟到不会覆盖新对白', raceCurrent.linked_dialogue_audio_id, newDialogueRace.data.id);
+  eq('旧旁白迟到不会覆盖新旁白', raceCurrent.linked_narration_audio_id, newNarrationRace.data.id);
+  ok('迟到旧对白仍保留历史素材', (await api('GET', `/api/audio-assets?project_id=${PROJECT_ID}`)).data.some((a) => a.id === oldDialogueRace.data.id));
+  ok('迟到旧旁白仍保留历史素材', (await api('GET', `/api/audio-assets?project_id=${PROJECT_ID}`)).data.some((a) => a.id === oldNarrationRace.data.id));
+
   const noProject = await api('GET', '/api/edit-plans/assemble');
   eq('缺项目参数 400', noProject.status, 400);
+
+  // 目标时长：项目里填的「单集时长」是自由文本，得解析成秒才用得上。
+  // 解析不出来必须是 0（前端据此不显示对比），不能编个默认值冒充。
+  const tgt = await api('PUT', `/api/projects/${PROJECT_ID}`, { episode_duration: '2分30秒' });
+  eq('项目时长已设置', tgt.status, 200);
+  const asm2 = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${ep}`)  ;
+  eq('汇总带出目标秒数', asm2.data.target_seconds, 150);
+  eq('汇总带出原始文本', asm2.data.target_label, '2分30秒');
+
+  await api('PUT', `/api/projects/${PROJECT_ID}`, { episode_duration: '随便写的' });
+  const asm3 = await api('GET', `/api/edit-plans/assemble?project_id=${PROJECT_ID}&episode=${ep}`);
+  eq('认不出的时长解析为 0', asm3.data.target_seconds, 0);
+  await api('PUT', `/api/projects/${PROJECT_ID}`, { episode_duration: '1分钟' });
 
   // 2) 存方案
   const planRes = await api('POST', '/api/edit-plans', {

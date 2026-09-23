@@ -41,7 +41,7 @@ export function renderBatchBar(el, job, onCancel) {
       ${job.status === 'running' ? '<div class="spinner sm"></div>' : icon(job.fail ? 'alert' : 'check', 16)}
       <div style="flex:1;min-width:0">
         <div style="display:flex;justify-content:space-between;margin-bottom:6px;gap:10px;flex-wrap:wrap">
-          <span>${esc(title)}：${job.done} / ${job.total}${job.status === 'cancelled' ? '（已取消）' : ''}</span>
+          <span>${esc(title)}：${job.done} / ${job.total}${job.status === 'cancelled' ? '（已取消）' : job.status === 'interrupted' ? '（上次运行中断，可继续补缺失项）' : ''}</span>
           <span style="color:var(--ok)">成功 ${job.ok}</span>
           ${job.fail ? `<span style="color:var(--err)">失败 ${job.fail}</span>` : ''}
         </div>

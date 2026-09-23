@@ -374,7 +374,29 @@ group('批量队列');
   ok('可按 id 取回', jobs.get(j3.id) === j3);
   ok('取消接口', jobs.cancel(j3.id));
   ok('取消不存在的任务返回 false', !jobs.cancel('nope'));
+
+  const restartHome = fs.mkdtempSync(path.join(os.tmpdir(), 'agnes-jobs-restart-'));
+  jobs.init(restartHome);
+  const interrupted = jobs.create('images', 4);
+  interrupted.done = 2; interrupted.ok = 2;
+  interrupted.items.push({ index: 0, ok: true, id: 'img-a' }, { index: 1, ok: true, id: 'img-b' });
+  // 用 cancel 触发一次落盘后再还原 running，模拟进程在运行中退出时磁盘上的状态。
+  jobs.cancel(interrupted.id);
+  const statePath = path.join(restartHome, 'batch-jobs.json');
+  const savedJobs = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const savedInterrupted = savedJobs.find((j) => j.id === interrupted.id);
+  savedInterrupted.status = 'running'; savedInterrupted.cancel = false; savedInterrupted.finished_at = null;
+  fs.writeFileSync(statePath, JSON.stringify(savedJobs, null, 2), 'utf8');
+  jobs.init(restartHome);
+  const restored = jobs.get(interrupted.id);
+  eq('重启后运行中批次转为 interrupted', restored.status, 'interrupted');
+  eq('重启后保留已完成数量', restored.done, 2);
+  eq('重启后保留成功数量', restored.ok, 2);
+  eq('重启后保留已完成结果', restored.items.length, 2);
+  ok('重启恢复不会自动继续提交', restored.done === 2 && restored.total === 4);
 }
+
+// ── 7. 路由分发}
 
 // ── 7. 路由分发 ──────────────────────────────────────────────
 group('路由分发');

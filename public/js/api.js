@@ -107,6 +107,7 @@ export const api = {
   batchImages: (p) => req('POST', '/api/batch/images', p),
   batchVideos: (p) => req('POST', '/api/batch/videos', p),
   cancelBatch: (id) => req('POST', `/api/batch/${id}/cancel`, {}),
+  batches: () => req('GET', '/api/batch'),
 
   importData: (data, mode) => req('POST', '/api/import', { data, mode }),
 };
